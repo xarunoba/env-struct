@@ -17,7 +17,7 @@ fn parseValue(comptime FieldType: type, val: []const u8, env_map: ?std.process.E
                 f32 => return try std.fmt.parseFloat(f32, val),
                 f64 => return try std.fmt.parseFloat(f64, val),
                 bool => {
-                    var lower_buf: [32]u8 = undefined;
+                    var lower_buf: [4]u8 = undefined;
                     if (val.len <= lower_buf.len) {
                         for (val, 0..) |c, i| {
                             lower_buf[i] = std.ascii.toLower(c);
