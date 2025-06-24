@@ -139,7 +139,7 @@ test "parse basic string value" {
     const TestConfig = struct {
         name: []const u8,
 
-        pub const env = .{
+        const env = .{
             .name = "TEST_NAME",
         };
     };
@@ -162,7 +162,7 @@ test "parse integer values" {
         big_num: u64,
         negative: i64,
 
-        pub const env = .{
+        const env = .{
             .port = "TEST_PORT",
             .timeout = "TEST_TIMEOUT",
             .big_num = "TEST_BIG_NUM",
@@ -192,7 +192,7 @@ test "parse float values" {
         ratio: f32,
         precision: f64,
 
-        pub const env = .{
+        const env = .{
             .ratio = "TEST_RATIO",
             .precision = "TEST_PRECISION",
         };
@@ -218,7 +218,7 @@ test "parse boolean values" {
         enabled: bool,
         disabled: bool,
 
-        pub const env = .{
+        const env = .{
             .debug = "TEST_DEBUG",
             .verbose = "TEST_VERBOSE",
             .enabled = "TEST_ENABLED",
@@ -249,7 +249,7 @@ test "parse optional values" {
         optional_present: ?[]const u8,
         optional_missing: ?i32,
 
-        pub const env = .{
+        const env = .{
             .required = "TEST_REQUIRED",
             .optional_present = "TEST_OPTIONAL_PRESENT",
             .optional_missing = "TEST_OPTIONAL_MISSING",
@@ -276,7 +276,7 @@ test "parse values with defaults" {
         debug: bool = false,
         name: []const u8 = "default_name",
 
-        pub const env = .{
+        const env = .{
             .port = "TEST_PORT_DEFAULT",
             .debug = "TEST_DEBUG_DEFAULT",
             .name = "TEST_NAME_DEFAULT",
@@ -300,7 +300,7 @@ test "parse optional fields with defaults when environment variable present" {
         timeout: ?i32 = 30,
         name: []const u8 = "default_name",
 
-        pub const env = .{
+        const env = .{
             .port = "TEST_PORT",
             .timeout = "TEST_TIMEOUT",
             .name = "TEST_NAME",
@@ -328,7 +328,7 @@ test "parse mixed optional and default fields" {
         default_field: u32 = 42,
         optional_with_default: ?i32 = 100,
 
-        pub const env = .{
+        const env = .{
             .required_field = "REQUIRED",
             .optional_field = "OPTIONAL",
             .default_field = "DEFAULT",
@@ -355,7 +355,7 @@ test "parse nested struct" {
         host: []const u8,
         port: u32,
 
-        pub const env = .{
+        const env = .{
             .host = "DB_HOST",
             .port = "DB_PORT",
         };
@@ -365,7 +365,7 @@ test "parse nested struct" {
         app_name: []const u8,
         database: DatabaseConfig,
 
-        pub const env = .{
+        const env = .{
             .app_name = "APP_NAME",
             .database = "",
         };
@@ -391,7 +391,7 @@ test "parse optional nested struct" {
         enabled: bool,
         ttl: u32,
 
-        pub const env = .{
+        const env = .{
             .enabled = "CACHE_ENABLED",
             .ttl = "CACHE_TTL",
         };
@@ -401,7 +401,7 @@ test "parse optional nested struct" {
         app_name: []const u8,
         cache: ?CacheConfig,
 
-        pub const env = .{
+        const env = .{
             .app_name = "APP_NAME",
             .cache = "",
         };
@@ -427,7 +427,7 @@ test "missing required environment variable" {
     const TestConfig = struct {
         required_field: []const u8,
 
-        pub const env = .{
+        const env = .{
             .required_field = "MISSING_VAR",
         };
     };
@@ -445,7 +445,7 @@ test "invalid integer parsing" {
     const TestConfig = struct {
         port: u32,
 
-        pub const env = .{
+        const env = .{
             .port = "INVALID_PORT",
         };
     };
@@ -465,7 +465,7 @@ test "invalid float parsing" {
     const TestConfig = struct {
         ratio: f32,
 
-        pub const env = .{
+        const env = .{
             .ratio = "INVALID_FLOAT",
         };
     };
@@ -486,7 +486,7 @@ test "field without env mapping is skipped" {
         mapped_field: []const u8,
         unmapped_field: []const u8 = "default",
 
-        pub const env = .{
+        const env = .{
             .mapped_field = "MAPPED_FIELD",
         };
     };
@@ -510,7 +510,7 @@ test "boolean case insensitive parsing" {
         flag3: bool,
         flag4: bool,
 
-        pub const env = .{
+        const env = .{
             .flag1 = "FLAG1",
             .flag2 = "FLAG2",
             .flag3 = "FLAG3",
@@ -543,7 +543,7 @@ test "comprehensive real-world config example" {
         password: ?[]const u8,
         ssl_enabled: bool,
 
-        pub const env = .{
+        const env = .{
             .host = "DB_HOST",
             .port = "DB_PORT",
             .username = "DB_USERNAME",
@@ -556,7 +556,7 @@ test "comprehensive real-world config example" {
         url: []const u8,
         timeout: u32,
 
-        pub const env = .{
+        const env = .{
             .url = "REDIS_URL",
             .timeout = "REDIS_TIMEOUT",
         };
@@ -569,7 +569,7 @@ test "comprehensive real-world config example" {
         database: DatabaseConfig,
         redis: ?RedisConfig,
 
-        pub const env = .{
+        const env = .{
             .app_name = "APP_NAME",
             .port = "PORT",
             .debug = "DEBUG",
@@ -616,7 +616,7 @@ test "edge cases and error conditions" {
         max_u64: u64,
         min_i64: i64,
 
-        pub const env = .{
+        const env = .{
             .max_u64 = "MAX_U64",
             .min_i64 = "MIN_I64",
         };
@@ -642,7 +642,7 @@ test "boolean edge cases" {
         flag_false3: bool,
         flag_false4: bool,
 
-        pub const env = .{
+        const env = .{
             .flag_false1 = "FLAG_FALSE1",
             .flag_false2 = "FLAG_FALSE2",
             .flag_false3 = "FLAG_FALSE3",
