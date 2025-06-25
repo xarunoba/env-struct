@@ -22,6 +22,8 @@ Managing configuration with environment variables is common, but environment var
 
 ## Installation
 
+### Using `zig fetch` (Recommended)
+
 Add this library to your project using `zig fetch`:
 
 ```bash
@@ -33,6 +35,14 @@ Then in your `build.zig`:
 ```zig
 const env_struct = b.dependency("env_struct", .{});
 exe.root_module.addImport("env_struct", env_struct.module("env_struct"));
+```
+
+### Direct Copy
+
+Alternatively, you can directly copy the `env_struct.zig` file from the `src/` directory into your project and import it locally to prevent any external dependencies:
+
+```zig
+const env_struct = @import("env_struct.zig");
 ```
 
 ## Usage
