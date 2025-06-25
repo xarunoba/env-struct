@@ -818,3 +818,36 @@ test "required field mapped to dash without default fails" {
     const result = loadMap(TestConfig, env_map, allocator);
     try std.testing.expectError(error.MissingEnvironmentVariable, result);
 }
+
+test "field names are case sensitive for environment variable mapping" {
+    // Note: On Windows, environment variables are case-insensitive,
+    // while on Linux they are case-sensitive. This test verifies that
+    // our library respects the platform's behavior.
+    const TestConfig = struct {
+        DATABASE_URL: []const u8,
+        database_url: []const u8,
+    };
+
+    const allocator = std.testing.allocator;
+
+    var env_map = try createTestEnvMap(allocator, &.{
+        .{ .key = "DATABASE_URL", .value = "postgres://upper" },
+        .{ .key = "database_url", .value = "postgres://lower" },
+    });
+    defer env_map.deinit();
+
+    const config = try loadMap(TestConfig, env_map, allocator);
+
+    // On case-sensitive systems (Linux), both fields should get their exact matches
+    // On case-insensitive systems (Windows), behavior may vary
+    if (@import("builtin").os.tag == .windows) {
+        // On Windows, the behavior depends on the order keys were added to the map
+        // We just verify that the fields are populated (exact values may vary)
+        try std.testing.expect(config.DATABASE_URL.len > 0);
+        try std.testing.expect(config.database_url.len > 0);
+    } else {
+        // On Unix-like systems, environment variables are case-sensitive
+        try std.testing.expectEqualStrings("postgres://upper", config.DATABASE_URL);
+        try std.testing.expectEqualStrings("postgres://lower", config.database_url);
+    }
+}
