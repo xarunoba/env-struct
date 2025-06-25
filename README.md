@@ -15,6 +15,8 @@ Managing configuration with environment variables is common, but environment var
 - ✅ **Type-safe**: Automatically parse environment variables into the correct types
 - ✅ **Multiple types**: Strings, integers, floats, booleans, and nested structs
 - ✅ **Optional fields**: Support for optional fields with defaults
+- ✅ **Flexible mapping**: Fields map to their names by default, optional custom mapping
+- ✅ **Skip fields**: Map fields to "-" to explicitly skip environment variable lookup
 - ✅ **Flexible boolean parsing**: Parse "true", "1", "yes" (case-insensitive) as true
 - ✅ **Custom environment maps**: Load from custom maps for testing
 
@@ -65,10 +67,39 @@ pub fn main() !void {
 }
 ```
 
+### Simple Usage (No env declaration needed)
+
+```zig
+const SimpleConfig = struct {
+    app_name: []const u8,    // Maps to "app_name" env var
+    port: u32,               // Maps to "port" env var
+    debug: bool = false,     // Maps to "debug" env var, defaults to false
+};
+
+const config = try env_struct.load(SimpleConfig, allocator);
+```
+
 Set environment variables:
 ```bash
 export APP_NAME="My App"
 export PORT="8080"
+```
+
+### Advanced Usage
+
+```zig
+const Config = struct {
+    app_name: []const u8,           // Maps to "app_name" env var
+    custom_port: u32,               // Maps to "PORT" env var (custom mapping)
+    debug: bool = false,            // Maps to "debug" env var, uses default
+    internal_field: []const u8 = "computed",  // Skipped from env lookup
+    optional_feature: ?u32,         // Maps to "optional_feature", can be null
+
+    const env = .{
+        .custom_port = "PORT",      // Custom environment variable name
+        .internal_field = "-",      // Skip environment variable lookup
+    };
+};
 ```
 
 ### Nested Structs & Custom Environment Maps
@@ -105,6 +136,30 @@ try custom_env.put("SERVER_PORT", "3000");
 const test_config = try env_struct.loadMap(ServerConfig, custom_env, allocator);
 ```
 
+## Mapping Rules
+
+Fields are mapped to environment variables with these behaviors:
+
+- **Default mapping**: Fields automatically map to environment variables with the same name
+- **Custom mapping**: Use the `env` declaration to map fields to different environment variable names  
+- **Skip mapping**: Map a field to `"-"` to skip environment variable lookup (must have default values or be optional)
+- **Field requirements**: Fields without default values must either have corresponding environment variables or be optional
+- **Optional env declaration**: The `env` declaration is only needed for custom mappings or skipping fields
+
+```zig
+const Config = struct {
+    app_name: []const u8,           // Maps to "app_name" env var
+    custom_port: u32,               // Maps to "PORT" env var  
+    skipped_field: []const u8 = "default",  // No env var lookup
+    
+    const env = .{
+        .custom_port = "PORT",      // Custom mapping
+        .skipped_field = "-",       // Skip mapping
+        // app_name uses default mapping
+    };
+};
+```
+
 ## Supported Types
 
 | Type | Examples | Notes |
@@ -123,26 +178,6 @@ Load configuration from system environment variables.
 
 ### `loadMap(comptime T: type, env_map: std.process.EnvMap, allocator: std.mem.Allocator) !T`
 Load configuration from a custom environment map.
-
-## Requirements
-
-Your struct must have an `env` declaration mapping field names to environment variable names:
-
-```zig
-const Config = struct {
-    name: []const u8,        // Required - must have APP_NAME env var
-    port: ?u32,              // Optional - can be missing
-    timeout: f32 = 30.0,     // Has default - uses default if missing
-    version: []const u8 = "1.0.0",  // Not mapped - must have default
-
-    const env = .{
-        .name = "APP_NAME",
-        .port = "PORT", 
-        .timeout = "TIMEOUT",
-        // version not mapped, uses default
-    };
-};
-```
 
 ## Building
 

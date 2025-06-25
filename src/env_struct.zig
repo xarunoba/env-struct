@@ -48,10 +48,6 @@ fn loadCore(comptime T: type, env_map: ?std.process.EnvMap, allocator: std.mem.A
         @compileError("Expected a struct type");
     }
 
-    if (!@hasDecl(T, "env")) {
-        @compileError("Struct must have an 'env' declaration");
-    }
-
     var owned_env_map: ?std.process.EnvMap = null;
     defer if (owned_env_map) |*map| map.deinit();
 
@@ -61,56 +57,63 @@ fn loadCore(comptime T: type, env_map: ?std.process.EnvMap, allocator: std.mem.A
     };
 
     inline for (type_info.@"struct".fields) |field| {
-        const env_decl = T.env;
+        const env_key: ?[]const u8 = if (@hasDecl(T, "env") and @hasField(@TypeOf(T.env), field.name)) blk: {
+            const mapped_key = @field(T.env, field.name);
+            if (std.mem.eql(u8, mapped_key, "-")) {
+                break :blk null;
+            }
+            break :blk mapped_key;
+        } else field.name;
 
-        if (@hasField(@TypeOf(env_decl), field.name)) {
-            const env_key = @field(env_decl, field.name);
+        const field_type_info = @typeInfo(field.type);
+        const is_optional = field_type_info == .optional;
+        const default_value = field.defaultValue();
 
-            const field_type_info = @typeInfo(field.type);
-            const is_optional = field_type_info == .optional;
+        if (field_type_info == .@"struct") {
+            @field(result, field.name) = try parseValue(field.type, "", env_map, allocator);
+        } else if (is_optional) {
+            const child_type = field_type_info.optional.child;
+            const child_type_info = @typeInfo(child_type);
 
-            const default_value = field.defaultValue();
-
-            if (field_type_info == .@"struct") {
-                @field(result, field.name) = try parseValue(field.type, "", env_map, allocator);
-            } else if (is_optional) {
-                const child_type = field_type_info.optional.child;
-                const child_type_info = @typeInfo(child_type);
-
-                if (child_type_info == .@"struct") {
-                    @field(result, field.name) = try parseValue(child_type, "", env_map, allocator);
+            if (child_type_info == .@"struct") {
+                @field(result, field.name) = try parseValue(child_type, "", env_map, allocator);
+            } else if (env_key) |key| {
+                const value = active_env_map.get(key);
+                if (value) |val| {
+                    @field(result, field.name) = try parseValue(child_type, val, env_map, allocator);
+                } else if (default_value) |def_val| {
+                    @field(result, field.name) = def_val;
                 } else {
-                    const value = active_env_map.get(env_key);
-                    if (value) |val| {
-                        @field(result, field.name) = try parseValue(child_type, val, env_map, allocator);
-                    } else if (default_value) |def_val| {
-                        @field(result, field.name) = def_val;
-                    } else {
-                        @field(result, field.name) = null;
-                    }
+                    @field(result, field.name) = null;
                 }
             } else {
-                const value = active_env_map.get(env_key);
-                if (value) |val| {
-                    @field(result, field.name) = try parseValue(field.type, val, env_map, allocator);
+                if (default_value) |def_val| {
+                    @field(result, field.name) = def_val;
                 } else {
-                    if (default_value) |def_val| {
-                        @field(result, field.name) = def_val;
-                    } else {
-                        return error.MissingEnvironmentVariable;
-                    }
+                    @field(result, field.name) = null;
+                }
+            }
+        } else if (env_key) |key| {
+            const value = active_env_map.get(key);
+            if (value) |val| {
+                @field(result, field.name) = try parseValue(field.type, val, env_map, allocator);
+            } else {
+                if (default_value) |def_val| {
+                    @field(result, field.name) = def_val;
+                } else {
+                    return error.MissingEnvironmentVariable;
                 }
             }
         } else {
-            const default_value = field.defaultValue();
             if (default_value) |def_val| {
                 @field(result, field.name) = def_val;
             } else {
-                const field_type_info = @typeInfo(field.type);
-                if (field_type_info != .optional) {
-                    @compileError("Field '" ++ field.name ++ "' has no default value and is not mapped to an environment variable");
+                const field_type_info_check = @typeInfo(field.type);
+                if (field_type_info_check == .optional) {
+                    @field(result, field.name) = null;
+                } else {
+                    return error.MissingEnvironmentVariable;
                 }
-                @field(result, field.name) = null;
             }
         }
     }
@@ -481,7 +484,7 @@ test "invalid float parsing" {
     try std.testing.expectError(error.InvalidCharacter, result);
 }
 
-test "field without env mapping is skipped" {
+test "field without env mapping uses field name as env key" {
     const TestConfig = struct {
         mapped_field: []const u8,
         unmapped_field: []const u8 = "default",
@@ -495,12 +498,13 @@ test "field without env mapping is skipped" {
 
     var env_map = try createTestEnvMap(allocator, &.{
         .{ .key = "MAPPED_FIELD", .value = "mapped_value" },
+        .{ .key = "unmapped_field", .value = "env_value" },
     });
     defer env_map.deinit();
 
     const config = try loadMap(TestConfig, env_map, allocator);
     try std.testing.expectEqualStrings("mapped_value", config.mapped_field);
-    try std.testing.expectEqualStrings("default", config.unmapped_field);
+    try std.testing.expectEqualStrings("env_value", config.unmapped_field);
 }
 
 test "boolean case insensitive parsing" {
@@ -665,4 +669,152 @@ test "boolean edge cases" {
     try std.testing.expect(!config.flag_false2);
     try std.testing.expect(!config.flag_false3);
     try std.testing.expect(!config.flag_false4);
+}
+
+test "unmapped fields use field names as environment keys" {
+    const TestConfig = struct {
+        app_name: []const u8,
+        port: u32,
+        debug: bool = false,
+    };
+
+    const allocator = std.testing.allocator;
+
+    var env_map = try createTestEnvMap(allocator, &.{
+        .{ .key = "app_name", .value = "test_app" },
+        .{ .key = "port", .value = "3000" },
+    });
+    defer env_map.deinit();
+
+    const config = try loadMap(TestConfig, env_map, allocator);
+    try std.testing.expectEqualStrings("test_app", config.app_name);
+    try std.testing.expectEqual(@as(u32, 3000), config.port);
+    try std.testing.expect(!config.debug);
+}
+
+test "mixed mapped and unmapped fields" {
+    const TestConfig = struct {
+        app_name: []const u8,
+        custom_port: u32,
+        debug: bool = false,
+
+        const env = .{
+            .custom_port = "PORT",
+        };
+    };
+
+    const allocator = std.testing.allocator;
+
+    var env_map = try createTestEnvMap(allocator, &.{
+        .{ .key = "app_name", .value = "mixed_test" },
+        .{ .key = "PORT", .value = "8080" },
+    });
+    defer env_map.deinit();
+
+    const config = try loadMap(TestConfig, env_map, allocator);
+    try std.testing.expectEqualStrings("mixed_test", config.app_name);
+    try std.testing.expectEqual(@as(u32, 8080), config.custom_port);
+    try std.testing.expect(!config.debug);
+}
+
+test "field mapped to dash is skipped" {
+    const TestConfig = struct {
+        app_name: []const u8,
+        skipped_field: []const u8 = "default_value",
+        port: u32,
+
+        const env = .{
+            .app_name = "APP_NAME",
+            .skipped_field = "-",
+            .port = "PORT",
+        };
+    };
+
+    const allocator = std.testing.allocator;
+
+    var env_map = try createTestEnvMap(allocator, &.{
+        .{ .key = "APP_NAME", .value = "test_app" },
+        .{ .key = "skipped_field", .value = "should_not_be_used" },
+        .{ .key = "PORT", .value = "8080" },
+    });
+    defer env_map.deinit();
+
+    const config = try loadMap(TestConfig, env_map, allocator);
+    try std.testing.expectEqualStrings("test_app", config.app_name);
+    try std.testing.expectEqualStrings("default_value", config.skipped_field);
+    try std.testing.expectEqual(@as(u32, 8080), config.port);
+}
+
+test "optional field mapped to dash is skipped" {
+    const TestConfig = struct {
+        app_name: []const u8,
+        skipped_optional: ?[]const u8,
+        port: u32,
+
+        const env = .{
+            .app_name = "APP_NAME",
+            .skipped_optional = "-",
+            .port = "PORT",
+        };
+    };
+
+    const allocator = std.testing.allocator;
+
+    var env_map = try createTestEnvMap(allocator, &.{
+        .{ .key = "APP_NAME", .value = "test_app" },
+        .{ .key = "skipped_optional", .value = "should_not_be_used" },
+        .{ .key = "PORT", .value = "8080" },
+    });
+    defer env_map.deinit();
+
+    const config = try loadMap(TestConfig, env_map, allocator);
+    try std.testing.expectEqualStrings("test_app", config.app_name);
+    try std.testing.expectEqual(@as(?[]const u8, null), config.skipped_optional);
+    try std.testing.expectEqual(@as(u32, 8080), config.port);
+}
+
+test "optional field with default mapped to dash uses default" {
+    const TestConfig = struct {
+        app_name: []const u8,
+        skipped_with_default: ?u32 = 42,
+        port: u32,
+
+        const env = .{
+            .app_name = "APP_NAME",
+            .skipped_with_default = "-",
+            .port = "PORT",
+        };
+    };
+
+    const allocator = std.testing.allocator;
+
+    var env_map = try createTestEnvMap(allocator, &.{
+        .{ .key = "APP_NAME", .value = "test_app" },
+        .{ .key = "skipped_with_default", .value = "999" },
+        .{ .key = "PORT", .value = "8080" },
+    });
+    defer env_map.deinit();
+
+    const config = try loadMap(TestConfig, env_map, allocator);
+    try std.testing.expectEqualStrings("test_app", config.app_name);
+    try std.testing.expectEqual(@as(?u32, 42), config.skipped_with_default);
+    try std.testing.expectEqual(@as(u32, 8080), config.port);
+}
+
+test "required field mapped to dash without default fails" {
+    const TestConfig = struct {
+        required_field: []const u8,
+
+        const env = .{
+            .required_field = "-",
+        };
+    };
+
+    const allocator = std.testing.allocator;
+
+    var env_map = try createTestEnvMap(allocator, &.{});
+    defer env_map.deinit();
+
+    const result = loadMap(TestConfig, env_map, allocator);
+    try std.testing.expectError(error.MissingEnvironmentVariable, result);
 }
