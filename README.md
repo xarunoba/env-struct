@@ -42,6 +42,33 @@ const std = @import("std");
 const env_struct = @import("env_struct");
 
 const Config = struct {
+    APP_NAME: []const u8,    // Maps to "APP_NAME" env var
+    PORT: u32,               // Maps to "PORT" env var
+    DEBUG: bool = false,     // Maps to "DEBUG" env var, defaults to false
+};
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const config = try env_struct.load(Config, allocator);
+    
+    std.debug.print("App: {s}\n", .{config.APP_NAME});
+    std.debug.print("Port: {}\n", .{config.PORT});
+}
+```
+
+Set environment variables:
+```bash
+export APP_NAME="My App"
+export PORT="8080"
+```
+
+### Custom Mapping
+
+```zig
+const Config = struct {
     name: []const u8,
     port: u32,
     debug: bool = false,
@@ -55,28 +82,7 @@ const Config = struct {
     };
 };
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    const config = try env_struct.load(Config, allocator);
-    
-    std.debug.print("App: {s}\n", .{config.name});
-    std.debug.print("Port: {}\n", .{config.port});
-}
-```
-
-### Simple Usage (No env declaration needed)
-
-```zig
-const SimpleConfig = struct {
-    app_name: []const u8,    // Maps to "app_name" env var
-    port: u32,               // Maps to "port" env var
-    debug: bool = false,     // Maps to "debug" env var, defaults to false
-};
-
-const config = try env_struct.load(SimpleConfig, allocator);
+const config = try env_struct.load(Config, allocator);
 ```
 
 Set environment variables:
