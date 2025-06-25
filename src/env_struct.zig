@@ -1,5 +1,45 @@
 const std = @import("std");
 
+fn hasAnyRequiredEnvVars(comptime T: type, env_map: std.process.EnvMap) bool {
+    const type_info = @typeInfo(T);
+    if (type_info != .@"struct") return false;
+
+    inline for (type_info.@"struct".fields) |field| {
+        const env_key: ?[]const u8 = if (@hasDecl(T, "env") and @hasField(@TypeOf(T.env), field.name)) blk: {
+            const mapped_key = @field(T.env, field.name);
+            if (std.mem.eql(u8, mapped_key, "-")) {
+                break :blk null;
+            }
+            break :blk mapped_key;
+        } else field.name;
+        const field_type_info = @typeInfo(field.type);
+        const is_optional = field_type_info == .optional;
+        const has_default = field.defaultValue() != null;
+
+        if (!is_optional and !has_default and env_key != null) {
+            if (env_map.get(env_key.?)) |_| {
+                return true;
+            }
+        }
+
+        // Check nested structs recursively
+        if (field_type_info == .@"struct") {
+            if (hasAnyRequiredEnvVars(field.type, env_map)) {
+                return true;
+            }
+        } else if (is_optional) {
+            const child_type = field_type_info.optional.child;
+            const child_type_info = @typeInfo(child_type);
+            if (child_type_info == .@"struct") {
+                if (hasAnyRequiredEnvVars(child_type, env_map)) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 fn parseValue(comptime FieldType: type, val: []const u8, env_map: ?std.process.EnvMap, allocator: std.mem.Allocator) !FieldType {
     const field_type_info = @typeInfo(FieldType);
 
@@ -82,9 +122,15 @@ fn loadCore(comptime T: type, env_map: ?std.process.EnvMap, allocator: std.mem.A
         } else if (is_optional) {
             const child_type = field_type_info.optional.child;
             const child_type_info = @typeInfo(child_type);
-
             if (child_type_info == .@"struct") {
-                @field(result, field.name) = try parseValue(child_type, "", env_map, allocator);
+                // Only parse optional nested struct if it has required environment variables
+                if (hasAnyRequiredEnvVars(child_type, active_env_map)) {
+                    @field(result, field.name) = try parseValue(child_type, "", env_map, allocator);
+                } else if (default_value) |def_val| {
+                    @field(result, field.name) = def_val;
+                } else {
+                    @field(result, field.name) = null;
+                }
             } else if (env_key) |key| {
                 const value = active_env_map.get(key);
                 if (value) |val| {
@@ -137,7 +183,6 @@ pub fn loadMap(comptime T: type, env_map: std.process.EnvMap, allocator: std.mem
     return try loadCore(T, env_map, allocator);
 }
 
-// Test utilities
 fn createTestEnvMap(allocator: std.mem.Allocator, env_vars: []const struct { key: []const u8, value: []const u8 }) !std.process.EnvMap {
     var env_map = std.process.EnvMap.init(allocator);
     for (env_vars) |env_var| {
@@ -148,17 +193,13 @@ fn createTestEnvMap(allocator: std.mem.Allocator, env_vars: []const struct { key
 
 test "parse basic types" {
     const TestConfig = struct {
-        // String
         name: []const u8,
-        // Integers
         port: u32,
         timeout: i32,
         big_num: u64,
         negative: i64,
-        // Floats
         ratio: f32,
         precision: f64,
-        // Booleans (various formats)
         debug: bool,
         verbose: bool,
         enabled: bool,
@@ -195,20 +236,15 @@ test "parse basic types" {
         .{ .key = "TEST_DISABLED", .value = "false" },
     });
     defer env_map.deinit();
-
     const config = try loadMap(TestConfig, env_map, allocator);
 
-    // String
     try std.testing.expectEqualStrings("hello world", config.name);
-    // Integers
     try std.testing.expectEqual(@as(u32, 8080), config.port);
     try std.testing.expectEqual(@as(i32, 30), config.timeout);
     try std.testing.expectEqual(@as(u64, 18446744073709551615), config.big_num);
     try std.testing.expectEqual(@as(i64, -42), config.negative);
-    // Floats
     try std.testing.expectApproxEqAbs(@as(f32, 3.14), config.ratio, 0.001);
     try std.testing.expectApproxEqAbs(@as(f64, 2.718281828459045), config.precision, 0.000000000000001);
-    // Booleans
     try std.testing.expect(config.debug);
     try std.testing.expect(config.verbose);
     try std.testing.expect(config.enabled);
@@ -240,7 +276,6 @@ test "optional and default values" {
         .{ .key = "TEST_REQUIRED", .value = "must be here" },
         .{ .key = "TEST_OPTIONAL_PRESENT", .value = "i am here" },
         .{ .key = "TEST_DEFAULT_OVERRIDDEN", .value = "true" },
-        // Intentionally missing: TEST_OPTIONAL_MISSING, TEST_DEFAULT_USED, TEST_OPTIONAL_WITH_DEFAULT
     });
     defer env_map.deinit();
 
@@ -329,7 +364,6 @@ test "parse optional nested struct" {
 test "error conditions" {
     const allocator = std.testing.allocator;
 
-    // Missing required field
     {
         const TestConfig = struct {
             required_field: []const u8,
@@ -343,7 +377,6 @@ test "error conditions" {
         try std.testing.expectError(error.MissingEnvironmentVariable, result);
     }
 
-    // Invalid integer parsing
     {
         const TestConfig = struct {
             port: u32,
@@ -359,7 +392,6 @@ test "error conditions" {
         try std.testing.expectError(error.InvalidCharacter, result);
     }
 
-    // Invalid float parsing
     {
         const TestConfig = struct {
             ratio: f32,
@@ -375,7 +407,6 @@ test "error conditions" {
         try std.testing.expectError(error.InvalidCharacter, result);
     }
 
-    // Required field mapped to dash without default
     {
         const TestConfig = struct {
             required_field: []const u8,
@@ -525,44 +556,13 @@ test "edge cases and error conditions" {
     try std.testing.expectEqual(@as(i64, -9223372036854775808), config.min_i64);
 }
 
-test "boolean edge cases" {
-    const BoolConfig = struct {
-        flag_false1: bool,
-        flag_false2: bool,
-        flag_false3: bool,
-        flag_false4: bool,
-
-        const env = .{
-            .flag_false1 = "FLAG_FALSE1",
-            .flag_false2 = "FLAG_FALSE2",
-            .flag_false3 = "FLAG_FALSE3",
-            .flag_false4 = "FLAG_FALSE4",
-        };
-    };
-
-    const allocator = std.testing.allocator;
-
-    var env_map = try createTestEnvMap(allocator, &.{
-        .{ .key = "FLAG_FALSE1", .value = "false" },
-        .{ .key = "FLAG_FALSE2", .value = "0" },
-        .{ .key = "FLAG_FALSE3", .value = "no" },
-        .{ .key = "FLAG_FALSE4", .value = "anything_else" },
-    });
-    defer env_map.deinit();
-
-    const config = try loadMap(BoolConfig, env_map, allocator);
-    try std.testing.expect(!config.flag_false1);
-    try std.testing.expect(!config.flag_false2);
-    try std.testing.expect(!config.flag_false3);
-    try std.testing.expect(!config.flag_false4);
-}
-
-test "boolean edge cases and case insensitivity" {
+test "boolean parsing and case handling" {
     const TestConfig = struct {
         flag_true1: bool,
         flag_true2: bool,
         flag_true3: bool,
         flag_true4: bool,
+        flag_true5: bool,
         flag_false1: bool,
         flag_false2: bool,
         flag_false3: bool,
@@ -573,6 +573,7 @@ test "boolean edge cases and case insensitivity" {
             .flag_true2 = "FLAG_TRUE2",
             .flag_true3 = "FLAG_TRUE3",
             .flag_true4 = "FLAG_TRUE4",
+            .flag_true5 = "FLAG_TRUE5",
             .flag_false1 = "FLAG_FALSE1",
             .flag_false2 = "FLAG_FALSE2",
             .flag_false3 = "FLAG_FALSE3",
@@ -581,26 +582,26 @@ test "boolean edge cases and case insensitivity" {
     };
 
     const allocator = std.testing.allocator;
-
     var env_map = try createTestEnvMap(allocator, &.{
-        // True values (case insensitive)
-        .{ .key = "FLAG_TRUE1", .value = "TRUE" },
-        .{ .key = "FLAG_TRUE2", .value = "True" },
-        .{ .key = "FLAG_TRUE3", .value = "YES" },
-        .{ .key = "FLAG_TRUE4", .value = "1" },
-        // False values
+        .{ .key = "FLAG_TRUE1", .value = "true" },
+        .{ .key = "FLAG_TRUE2", .value = "TRUE" },
+        .{ .key = "FLAG_TRUE3", .value = "1" },
+        .{ .key = "FLAG_TRUE4", .value = "yes" },
+        .{ .key = "FLAG_TRUE5", .value = "YES" },
         .{ .key = "FLAG_FALSE1", .value = "false" },
         .{ .key = "FLAG_FALSE2", .value = "0" },
         .{ .key = "FLAG_FALSE3", .value = "no" },
         .{ .key = "FLAG_FALSE4", .value = "anything_else" },
     });
     defer env_map.deinit();
-
     const config = try loadMap(TestConfig, env_map, allocator);
+
     try std.testing.expect(config.flag_true1);
     try std.testing.expect(config.flag_true2);
     try std.testing.expect(config.flag_true3);
     try std.testing.expect(config.flag_true4);
+    try std.testing.expect(config.flag_true5);
+
     try std.testing.expect(!config.flag_false1);
     try std.testing.expect(!config.flag_false2);
     try std.testing.expect(!config.flag_false3);
@@ -659,10 +660,8 @@ test "comprehensive integer types and limits" {
         .{ .key = "database_url", .value = "postgres://lower" },
     });
     defer env_map.deinit();
-
     const config = try loadMap(TestConfig, env_map, allocator);
 
-    // Test all integer types at their limits
     try std.testing.expectEqual(@as(i8, -128), config.val_i8);
     try std.testing.expectEqual(@as(i16, -32768), config.val_i16);
     try std.testing.expectEqual(@as(i32, -2147483648), config.val_i32);
@@ -676,12 +675,156 @@ test "comprehensive integer types and limits" {
     try std.testing.expectEqual(@as(u128, 340282366920938463463374607431768211455), config.val_u128);
     try std.testing.expectEqual(@as(usize, 2000), config.val_usize);
 
-    // Test case sensitivity behavior (platform dependent)
     if (@import("builtin").os.tag == .windows) {
         try std.testing.expect(config.DATABASE_URL.len > 0);
         try std.testing.expect(config.database_url.len > 0);
     } else {
         try std.testing.expectEqualStrings("postgres://upper", config.DATABASE_URL);
         try std.testing.expectEqualStrings("postgres://lower", config.database_url);
+    }
+}
+
+test "nested struct parsing and optional behavior" {
+    const MetricsConfig = struct {
+        enabled: bool,
+        port: u32 = 9090,
+        timeout: u32 = 5000,
+
+        const env = .{
+            .enabled = "METRICS_ENABLED",
+            .port = "METRICS_PORT",
+            .timeout = "METRICS_TIMEOUT",
+        };
+    };
+
+    const LoggingConfig = struct {
+        level: []const u8,
+        file_path: ?[]const u8,
+        max_size: u32,
+
+        const env = .{
+            .level = "LOG_LEVEL",
+            .file_path = "LOG_FILE_PATH",
+            .max_size = "LOG_MAX_SIZE",
+        };
+    };
+
+    const MonitoringConfig = struct {
+        alert_threshold: f32,
+        metrics: ?MetricsConfig,
+        logging: LoggingConfig,
+
+        const env = .{
+            .alert_threshold = "MONITORING_ALERT_THRESHOLD",
+            .metrics = "",
+            .logging = "",
+        };
+    };
+
+    const AppConfig = struct {
+        app_name: []const u8,
+        version: []const u8,
+        monitoring: ?MonitoringConfig,
+        debug: bool,
+
+        const env = .{
+            .app_name = "APP_NAME",
+            .version = "APP_VERSION",
+            .monitoring = "",
+            .debug = "DEBUG",
+        };
+    };
+
+    const allocator = std.testing.allocator;
+
+    {
+        var env_map = try createTestEnvMap(allocator, &.{
+            .{ .key = "APP_NAME", .value = "nested-app" },
+            .{ .key = "APP_VERSION", .value = "1.0.0" },
+            .{ .key = "DEBUG", .value = "true" },
+            .{ .key = "MONITORING_ALERT_THRESHOLD", .value = "95.5" },
+            .{ .key = "LOG_LEVEL", .value = "info" },
+            .{ .key = "LOG_FILE_PATH", .value = "/var/log/app.log" },
+            .{ .key = "LOG_MAX_SIZE", .value = "10485760" },
+            .{ .key = "METRICS_ENABLED", .value = "true" },
+            .{ .key = "METRICS_PORT", .value = "9090" },
+        });
+        defer env_map.deinit();
+        const config = try loadMap(AppConfig, env_map, allocator);
+
+        try std.testing.expectEqualStrings("nested-app", config.app_name);
+        try std.testing.expectEqualStrings("1.0.0", config.version);
+        try std.testing.expect(config.debug);
+
+        try std.testing.expect(config.monitoring != null);
+        try std.testing.expectApproxEqAbs(@as(f32, 95.5), config.monitoring.?.alert_threshold, 0.001);
+
+        try std.testing.expectEqualStrings("info", config.monitoring.?.logging.level);
+        try std.testing.expectEqualStrings("/var/log/app.log", config.monitoring.?.logging.file_path.?);
+        try std.testing.expectEqual(@as(u32, 10485760), config.monitoring.?.logging.max_size);
+
+        try std.testing.expect(config.monitoring.?.metrics != null);
+        try std.testing.expect(config.monitoring.?.metrics.?.enabled);
+        try std.testing.expectEqual(@as(u32, 9090), config.monitoring.?.metrics.?.port);
+        try std.testing.expectEqual(@as(u32, 5000), config.monitoring.?.metrics.?.timeout);
+    }
+
+    {
+        var env_map = try createTestEnvMap(allocator, &.{
+            .{ .key = "APP_NAME", .value = "simple-app" },
+            .{ .key = "APP_VERSION", .value = "2.0.0" },
+            .{ .key = "DEBUG", .value = "false" },
+        });
+        defer env_map.deinit();
+
+        const config = try loadMap(AppConfig, env_map, allocator);
+
+        try std.testing.expectEqualStrings("simple-app", config.app_name);
+        try std.testing.expectEqualStrings("2.0.0", config.version);
+        try std.testing.expect(!config.debug);
+        try std.testing.expect(config.monitoring == null);
+    }
+
+    {
+        var env_map = try createTestEnvMap(allocator, &.{
+            .{ .key = "APP_NAME", .value = "partial-app" },
+            .{ .key = "APP_VERSION", .value = "1.5.0" },
+            .{ .key = "DEBUG", .value = "true" },
+            .{ .key = "MONITORING_ALERT_THRESHOLD", .value = "80.0" },
+            .{ .key = "LOG_LEVEL", .value = "warn" },
+            .{ .key = "LOG_MAX_SIZE", .value = "5242880" },
+        });
+        defer env_map.deinit();
+
+        const config = try loadMap(AppConfig, env_map, allocator);
+        try std.testing.expectEqualStrings("partial-app", config.app_name);
+        try std.testing.expect(config.monitoring != null);
+        try std.testing.expectApproxEqAbs(@as(f32, 80.0), config.monitoring.?.alert_threshold, 0.001);
+
+        try std.testing.expectEqualStrings("warn", config.monitoring.?.logging.level);
+        try std.testing.expectEqual(@as(?[]const u8, null), config.monitoring.?.logging.file_path);
+        try std.testing.expectEqual(@as(u32, 5242880), config.monitoring.?.logging.max_size);
+
+        try std.testing.expect(config.monitoring.?.metrics == null);
+    }
+
+    {
+        var env_map = try createTestEnvMap(allocator, &.{
+            .{ .key = "APP_NAME", .value = "defaults-app" },
+            .{ .key = "APP_VERSION", .value = "3.0.0" },
+            .{ .key = "DEBUG", .value = "false" },
+            .{ .key = "MONITORING_ALERT_THRESHOLD", .value = "70.0" },
+            .{ .key = "LOG_LEVEL", .value = "error" },
+            .{ .key = "LOG_MAX_SIZE", .value = "1048576" },
+            .{ .key = "METRICS_ENABLED", .value = "false" },
+        });
+        defer env_map.deinit();
+
+        const config = try loadMap(AppConfig, env_map, allocator);
+        try std.testing.expect(config.monitoring != null);
+        try std.testing.expect(config.monitoring.?.metrics != null);
+        try std.testing.expect(!config.monitoring.?.metrics.?.enabled);
+        try std.testing.expectEqual(@as(u32, 9090), config.monitoring.?.metrics.?.port);
+        try std.testing.expectEqual(@as(u32, 5000), config.monitoring.?.metrics.?.timeout);
     }
 }
