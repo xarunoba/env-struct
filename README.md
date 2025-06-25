@@ -4,11 +4,14 @@
 
 **`env-struct`** — environment variables to typed structs
 
-A Zig library for parsing environment variables directly into typed structs, providing automatic type conversion and validation. (Note: This library does not read environment variables from files; it only parses existing environment variables into a struct.)
+A Zig library for parsing environment variables directly into typed structs, providing automatic type conversion and validation.
+> This library does not read environment variables from files; it only parses existing environment variables into a struct.
 
 ## Why
 
-Managing configuration with environment variables is common, but environment variables are always strings and require manual parsing and validation. `env-struct` eliminates boilerplate by mapping environment variables directly to typed Zig structs, providing automatic type conversion and validation at load time. This approach improves safety, reduces errors, and makes configuration handling more robust and maintainable.
+Managing configuration with environment variables is common, but environment variables are always strings and require manual parsing and validation. `env-struct` eliminates boilerplate by mapping environment variables directly to typed Zig structs, providing automatic type conversion and validation at load time. This approach improves safety, reduces errors, and makes configuration handling more robust and maintainable. 
+
+> This is my first ever Zig project so feel free to contribute and send PRs!
 
 ## Features
 
@@ -39,7 +42,7 @@ exe.root_module.addImport("env_struct", env_struct.module("env_struct"));
 
 ### Direct Copy
 
-Alternatively, you can directly copy the `env_struct.zig` file from the `src/` directory into your project and import it locally to prevent any external dependencies:
+Alternatively, you can directly copy the [`env_struct.zig`](./src/env_struct.zig) file from the `src/` directory into your project and import it locally to prevent any external dependencies:
 
 ```zig
 const env_struct = @import("env_struct.zig");
