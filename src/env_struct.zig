@@ -1,3 +1,12 @@
+//! Parse environment variables directly into typed Zig structs.
+//!
+//! Provides automatic type conversion and validation for strings, integers,
+//! floats, booleans, and nested structs with support for optional fields,
+//! custom mapping, and default values.
+//!
+//! Author: @xarunoba
+//! Repository: https://github.com/xarunoba/env-struct
+
 const std = @import("std");
 
 fn hasAnyRequiredEnvVars(comptime T: type, env_map: std.process.EnvMap) bool {
