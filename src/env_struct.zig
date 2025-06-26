@@ -87,8 +87,11 @@ fn parseValue(comptime FieldType: type, val: []const u8, env_map: ?std.process.E
                 u64 => return try std.fmt.parseInt(u64, val, 10),
                 u128 => return try std.fmt.parseInt(u128, val, 10),
                 usize => return try std.fmt.parseInt(usize, val, 10),
+                f16 => return try std.fmt.parseFloat(f16, val),
                 f32 => return try std.fmt.parseFloat(f32, val),
                 f64 => return try std.fmt.parseFloat(f64, val),
+                f80 => return try std.fmt.parseFloat(f80, val),
+                f128 => return try std.fmt.parseFloat(f128, val),
                 bool => {
                     var lower_buf: [4]u8 = undefined;
                     if (val.len <= lower_buf.len) {
@@ -250,6 +253,9 @@ test "parse primitive types" {
         val_u64: u64,
         val_u128: u128,
         val_usize: usize,
+        val_f16: f16,
+        val_f80: f80,
+        val_f128: f128,
         database_url_upper: []const u8,
         database_url_lower: []const u8,
 
@@ -286,6 +292,9 @@ test "parse primitive types" {
             .val_u64 = "VAL_U64",
             .val_u128 = "VAL_U128",
             .val_usize = "VAL_USIZE",
+            .val_f16 = "VAL_F16",
+            .val_f80 = "VAL_F80",
+            .val_f128 = "VAL_F128",
             .database_url_upper = "DATABASE_URL",
             .database_url_lower = "database_url",
         };
@@ -325,8 +334,10 @@ test "parse primitive types" {
         .{ .key = "VAL_U32", .value = "4294967295" },
         .{ .key = "VAL_U64", .value = "18446744073709551615" },
         .{ .key = "VAL_U128", .value = "340282366920938463463374607431768211455" },
-        .{ .key = "VAL_USIZE", .value = "2000" },
-        .{ .key = "DATABASE_URL", .value = "postgres://upper" },
+        .{ .key = "VAL_USIZE", .value = "1000" },
+        .{ .key = "VAL_F16", .value = "0.333" },
+        .{ .key = "VAL_F80", .value = "3.141592653589793" },
+        .{ .key = "VAL_F128", .value = "2.71828182845904523536028747135266250" },
         .{ .key = "database_url", .value = "postgres://lower" },
     });
     defer env_map.deinit();
@@ -363,7 +374,10 @@ test "parse primitive types" {
     try std.testing.expectEqual(@as(u32, 4294967295), config.val_u32);
     try std.testing.expectEqual(@as(u64, 18446744073709551615), config.val_u64);
     try std.testing.expectEqual(@as(u128, 340282366920938463463374607431768211455), config.val_u128);
-    try std.testing.expectEqual(@as(usize, 2000), config.val_usize);
+    try std.testing.expectEqual(@as(usize, 1000), config.val_usize);
+    try std.testing.expectApproxEqAbs(@as(f16, 0.333), config.val_f16, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f80, 3.141592653589793), config.val_f80, 1e-15);
+    try std.testing.expectApproxEqAbs(@as(f128, 2.71828182845904523536028747135266250), config.val_f128, 1e-30);
 
     if (@import("builtin").os.tag == .windows) {
         try std.testing.expect(config.database_url_upper.len > 0);

@@ -186,7 +186,7 @@ const Config = struct {
 | `[]const u8` | `"hello"` | String values |
 | `i8`, `i16`, `i32`, `i64`, `i128`, `isize` | `"42"`, `"-123"` | Signed integers |
 | `u8`, `u16`, `u32`, `u64`, `u128`, `usize` | `"42"`, `"255"` | Unsigned integers |
-| `f32`, `f64` | `"3.14"` | Floating point |
+| `f16`, `f32`, `f64`, `f80`, `f128` | `"3.14"` | Floating point |
 | `bool` | `"true"`, `"1"`, `"yes"` | Case-insensitive |
 | `?T` | Any valid `T` or missing | Optional types |
 | `struct` | N/A | Nested structs |
