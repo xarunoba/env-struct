@@ -9,6 +9,22 @@
 
 const std = @import("std");
 
+//==============================================================================
+// Public API
+//==============================================================================
+
+pub fn load(comptime T: type, allocator: std.mem.Allocator) !T {
+    return try loadCore(T, null, allocator);
+}
+
+pub fn loadMap(comptime T: type, env_map: std.process.EnvMap, allocator: std.mem.Allocator) !T {
+    return try loadCore(T, env_map, allocator);
+}
+
+//==============================================================================
+// Internal Functions
+//==============================================================================
+
 fn hasAnyRequiredEnvVars(comptime T: type, env_map: std.process.EnvMap) bool {
     const type_info = @typeInfo(T);
     if (type_info != .@"struct") return false;
@@ -184,13 +200,9 @@ fn loadCore(comptime T: type, env_map: ?std.process.EnvMap, allocator: std.mem.A
     return result;
 }
 
-pub fn load(comptime T: type, allocator: std.mem.Allocator) !T {
-    return try loadCore(T, null, allocator);
-}
-
-pub fn loadMap(comptime T: type, env_map: std.process.EnvMap, allocator: std.mem.Allocator) !T {
-    return try loadCore(T, env_map, allocator);
-}
+//==============================================================================
+// Test Utilities
+//==============================================================================
 
 fn createTestEnvMap(allocator: std.mem.Allocator, env_vars: []const struct { key: []const u8, value: []const u8 }) !std.process.EnvMap {
     var env_map = std.process.EnvMap.init(allocator);
@@ -200,7 +212,11 @@ fn createTestEnvMap(allocator: std.mem.Allocator, env_vars: []const struct { key
     return env_map;
 }
 
-test "parse basic types" {
+//==============================================================================
+// Tests
+//==============================================================================
+
+test "parse primitive types" {
     const TestConfig = struct {
         name: []const u8,
         port: u32,
@@ -213,6 +229,29 @@ test "parse basic types" {
         verbose: bool,
         enabled: bool,
         disabled: bool,
+        flag_true1: bool,
+        flag_true2: bool,
+        flag_true3: bool,
+        flag_true4: bool,
+        flag_true5: bool,
+        flag_false1: bool,
+        flag_false2: bool,
+        flag_false3: bool,
+        flag_false4: bool,
+        val_i8: i8,
+        val_i16: i16,
+        val_i32: i32,
+        val_i64: i64,
+        val_i128: i128,
+        val_isize: isize,
+        val_u8: u8,
+        val_u16: u16,
+        val_u32: u32,
+        val_u64: u64,
+        val_u128: u128,
+        val_usize: usize,
+        database_url_upper: []const u8,
+        database_url_lower: []const u8,
 
         const env = .{
             .name = "TEST_NAME",
@@ -226,6 +265,29 @@ test "parse basic types" {
             .verbose = "TEST_VERBOSE",
             .enabled = "TEST_ENABLED",
             .disabled = "TEST_DISABLED",
+            .flag_true1 = "FLAG_TRUE1",
+            .flag_true2 = "FLAG_TRUE2",
+            .flag_true3 = "FLAG_TRUE3",
+            .flag_true4 = "FLAG_TRUE4",
+            .flag_true5 = "FLAG_TRUE5",
+            .flag_false1 = "FLAG_FALSE1",
+            .flag_false2 = "FLAG_FALSE2",
+            .flag_false3 = "FLAG_FALSE3",
+            .flag_false4 = "FLAG_FALSE4",
+            .val_i8 = "VAL_I8",
+            .val_i16 = "VAL_I16",
+            .val_i32 = "VAL_I32",
+            .val_i64 = "VAL_I64",
+            .val_i128 = "VAL_I128",
+            .val_isize = "VAL_ISIZE",
+            .val_u8 = "VAL_U8",
+            .val_u16 = "VAL_U16",
+            .val_u32 = "VAL_U32",
+            .val_u64 = "VAL_U64",
+            .val_u128 = "VAL_U128",
+            .val_usize = "VAL_USIZE",
+            .database_url_upper = "DATABASE_URL",
+            .database_url_lower = "database_url",
         };
     };
 
@@ -243,6 +305,29 @@ test "parse basic types" {
         .{ .key = "TEST_VERBOSE", .value = "1" },
         .{ .key = "TEST_ENABLED", .value = "YES" },
         .{ .key = "TEST_DISABLED", .value = "false" },
+        .{ .key = "FLAG_TRUE1", .value = "true" },
+        .{ .key = "FLAG_TRUE2", .value = "TRUE" },
+        .{ .key = "FLAG_TRUE3", .value = "1" },
+        .{ .key = "FLAG_TRUE4", .value = "yes" },
+        .{ .key = "FLAG_TRUE5", .value = "YES" },
+        .{ .key = "FLAG_FALSE1", .value = "false" },
+        .{ .key = "FLAG_FALSE2", .value = "0" },
+        .{ .key = "FLAG_FALSE3", .value = "no" },
+        .{ .key = "FLAG_FALSE4", .value = "anything_else" },
+        .{ .key = "VAL_I8", .value = "-128" },
+        .{ .key = "VAL_I16", .value = "-32768" },
+        .{ .key = "VAL_I32", .value = "-2147483648" },
+        .{ .key = "VAL_I64", .value = "-9223372036854775808" },
+        .{ .key = "VAL_I128", .value = "-170141183460469231731687303715884105728" },
+        .{ .key = "VAL_ISIZE", .value = "-1000" },
+        .{ .key = "VAL_U8", .value = "255" },
+        .{ .key = "VAL_U16", .value = "65535" },
+        .{ .key = "VAL_U32", .value = "4294967295" },
+        .{ .key = "VAL_U64", .value = "18446744073709551615" },
+        .{ .key = "VAL_U128", .value = "340282366920938463463374607431768211455" },
+        .{ .key = "VAL_USIZE", .value = "2000" },
+        .{ .key = "DATABASE_URL", .value = "postgres://upper" },
+        .{ .key = "database_url", .value = "postgres://lower" },
     });
     defer env_map.deinit();
     const config = try loadMap(TestConfig, env_map, allocator);
@@ -258,9 +343,38 @@ test "parse basic types" {
     try std.testing.expect(config.verbose);
     try std.testing.expect(config.enabled);
     try std.testing.expect(!config.disabled);
+    try std.testing.expect(config.flag_true1);
+    try std.testing.expect(config.flag_true2);
+    try std.testing.expect(config.flag_true3);
+    try std.testing.expect(config.flag_true4);
+    try std.testing.expect(config.flag_true5);
+    try std.testing.expect(!config.flag_false1);
+    try std.testing.expect(!config.flag_false2);
+    try std.testing.expect(!config.flag_false3);
+    try std.testing.expect(!config.flag_false4);
+    try std.testing.expectEqual(@as(i8, -128), config.val_i8);
+    try std.testing.expectEqual(@as(i16, -32768), config.val_i16);
+    try std.testing.expectEqual(@as(i32, -2147483648), config.val_i32);
+    try std.testing.expectEqual(@as(i64, -9223372036854775808), config.val_i64);
+    try std.testing.expectEqual(@as(i128, -170141183460469231731687303715884105728), config.val_i128);
+    try std.testing.expectEqual(@as(isize, -1000), config.val_isize);
+    try std.testing.expectEqual(@as(u8, 255), config.val_u8);
+    try std.testing.expectEqual(@as(u16, 65535), config.val_u16);
+    try std.testing.expectEqual(@as(u32, 4294967295), config.val_u32);
+    try std.testing.expectEqual(@as(u64, 18446744073709551615), config.val_u64);
+    try std.testing.expectEqual(@as(u128, 340282366920938463463374607431768211455), config.val_u128);
+    try std.testing.expectEqual(@as(usize, 2000), config.val_usize);
+
+    if (@import("builtin").os.tag == .windows) {
+        try std.testing.expect(config.database_url_upper.len > 0);
+        try std.testing.expect(config.database_url_lower.len > 0);
+    } else {
+        try std.testing.expectEqualStrings("postgres://upper", config.database_url_upper);
+        try std.testing.expectEqualStrings("postgres://lower", config.database_url_lower);
+    }
 }
 
-test "optional and default values" {
+test "optional and default value handling" {
     const TestConfig = struct {
         required: []const u8,
         optional_present: ?[]const u8,
@@ -295,139 +409,6 @@ test "optional and default values" {
     try std.testing.expectEqual(@as(u32, 3000), config.default_used);
     try std.testing.expect(config.default_overridden);
     try std.testing.expectEqual(@as(?i32, 100), config.optional_with_default);
-}
-
-test "parse nested struct" {
-    const DatabaseConfig = struct {
-        host: []const u8,
-        port: u32,
-
-        const env = .{
-            .host = "DB_HOST",
-            .port = "DB_PORT",
-        };
-    };
-
-    const TestConfig = struct {
-        app_name: []const u8,
-        database: DatabaseConfig,
-
-        const env = .{
-            .app_name = "APP_NAME",
-            .database = "",
-        };
-    };
-
-    const allocator = std.testing.allocator;
-
-    var env_map = try createTestEnvMap(allocator, &.{
-        .{ .key = "APP_NAME", .value = "my_app" },
-        .{ .key = "DB_HOST", .value = "localhost" },
-        .{ .key = "DB_PORT", .value = "5432" },
-    });
-    defer env_map.deinit();
-
-    const config = try loadMap(TestConfig, env_map, allocator);
-    try std.testing.expectEqualStrings("my_app", config.app_name);
-    try std.testing.expectEqualStrings("localhost", config.database.host);
-    try std.testing.expectEqual(@as(u32, 5432), config.database.port);
-}
-
-test "parse optional nested struct" {
-    const CacheConfig = struct {
-        enabled: bool,
-        ttl: u32,
-
-        const env = .{
-            .enabled = "CACHE_ENABLED",
-            .ttl = "CACHE_TTL",
-        };
-    };
-
-    const TestConfig = struct {
-        app_name: []const u8,
-        cache: ?CacheConfig,
-
-        const env = .{
-            .app_name = "APP_NAME",
-            .cache = "",
-        };
-    };
-
-    const allocator = std.testing.allocator;
-
-    var env_map = try createTestEnvMap(allocator, &.{
-        .{ .key = "APP_NAME", .value = "my_app" },
-        .{ .key = "CACHE_ENABLED", .value = "true" },
-        .{ .key = "CACHE_TTL", .value = "300" },
-    });
-    defer env_map.deinit();
-
-    const config = try loadMap(TestConfig, env_map, allocator);
-    try std.testing.expectEqualStrings("my_app", config.app_name);
-    try std.testing.expect(config.cache != null);
-    try std.testing.expect(config.cache.?.enabled);
-    try std.testing.expectEqual(@as(u32, 300), config.cache.?.ttl);
-}
-
-test "error conditions" {
-    const allocator = std.testing.allocator;
-
-    {
-        const TestConfig = struct {
-            required_field: []const u8,
-            const env = .{ .required_field = "MISSING_VAR" };
-        };
-
-        var env_map = try createTestEnvMap(allocator, &.{});
-        defer env_map.deinit();
-
-        const result = loadMap(TestConfig, env_map, allocator);
-        try std.testing.expectError(error.MissingEnvironmentVariable, result);
-    }
-
-    {
-        const TestConfig = struct {
-            port: u32,
-            const env = .{ .port = "INVALID_PORT" };
-        };
-
-        var env_map = try createTestEnvMap(allocator, &.{
-            .{ .key = "INVALID_PORT", .value = "not_a_number" },
-        });
-        defer env_map.deinit();
-
-        const result = loadMap(TestConfig, env_map, allocator);
-        try std.testing.expectError(error.InvalidCharacter, result);
-    }
-
-    {
-        const TestConfig = struct {
-            ratio: f32,
-            const env = .{ .ratio = "INVALID_FLOAT" };
-        };
-
-        var env_map = try createTestEnvMap(allocator, &.{
-            .{ .key = "INVALID_FLOAT", .value = "not_a_float" },
-        });
-        defer env_map.deinit();
-
-        const result = loadMap(TestConfig, env_map, allocator);
-        try std.testing.expectError(error.InvalidCharacter, result);
-    }
-
-    {
-        const TestConfig = struct {
-            required_field: []const u8,
-            const env = .{ .required_field = "-" };
-        };
-
-        var env_map = try createTestEnvMap(allocator, &.{});
-        defer env_map.deinit();
-
-        const result = loadMap(TestConfig, env_map, allocator);
-        try std.testing.expectError(error.MissingEnvironmentVariable, result);
-    }
 }
 
 test "field mapping and skipping" {
@@ -465,235 +446,7 @@ test "field mapping and skipping" {
     try std.testing.expectEqual(@as(?u32, 42), config.skipped_with_default);
 }
 
-test "comprehensive real-world config example" {
-    const DatabaseConfig = struct {
-        host: []const u8,
-        port: u32,
-        username: []const u8,
-        password: ?[]const u8,
-        ssl_enabled: bool,
-
-        const env = .{
-            .host = "DB_HOST",
-            .port = "DB_PORT",
-            .username = "DB_USERNAME",
-            .password = "DB_PASSWORD",
-            .ssl_enabled = "DB_SSL_ENABLED",
-        };
-    };
-
-    const RedisConfig = struct {
-        url: []const u8,
-        timeout: u32,
-
-        const env = .{
-            .url = "REDIS_URL",
-            .timeout = "REDIS_TIMEOUT",
-        };
-    };
-
-    const AppConfig = struct {
-        app_name: []const u8,
-        port: u32,
-        debug: bool,
-        database: DatabaseConfig,
-        redis: ?RedisConfig,
-
-        const env = .{
-            .app_name = "APP_NAME",
-            .port = "PORT",
-            .debug = "DEBUG",
-            .database = "",
-            .redis = "",
-        };
-    };
-
-    const allocator = std.testing.allocator;
-
-    var env_map = try createTestEnvMap(allocator, &.{
-        .{ .key = "APP_NAME", .value = "my-awesome-app" },
-        .{ .key = "PORT", .value = "8080" },
-        .{ .key = "DEBUG", .value = "true" },
-        .{ .key = "DB_HOST", .value = "localhost" },
-        .{ .key = "DB_PORT", .value = "5432" },
-        .{ .key = "DB_USERNAME", .value = "admin" },
-        .{ .key = "DB_PASSWORD", .value = "secret123" },
-        .{ .key = "DB_SSL_ENABLED", .value = "yes" },
-        .{ .key = "REDIS_URL", .value = "redis://localhost:6379" },
-        .{ .key = "REDIS_TIMEOUT", .value = "5000" },
-    });
-    defer env_map.deinit();
-
-    const config = try loadMap(AppConfig, env_map, allocator);
-
-    try std.testing.expectEqualStrings("my-awesome-app", config.app_name);
-    try std.testing.expectEqual(@as(u32, 8080), config.port);
-    try std.testing.expect(config.debug);
-
-    try std.testing.expectEqualStrings("localhost", config.database.host);
-    try std.testing.expectEqual(@as(u32, 5432), config.database.port);
-    try std.testing.expectEqualStrings("admin", config.database.username);
-    try std.testing.expectEqualStrings("secret123", config.database.password.?);
-    try std.testing.expect(config.database.ssl_enabled);
-
-    try std.testing.expect(config.redis != null);
-    try std.testing.expectEqualStrings("redis://localhost:6379", config.redis.?.url);
-    try std.testing.expectEqual(@as(u32, 5000), config.redis.?.timeout);
-}
-
-test "edge cases and error conditions" {
-    const BigNumConfig = struct {
-        max_u64: u64,
-        min_i64: i64,
-
-        const env = .{
-            .max_u64 = "MAX_U64",
-            .min_i64 = "MIN_I64",
-        };
-    };
-
-    const allocator = std.testing.allocator;
-
-    var env_map = try createTestEnvMap(allocator, &.{
-        .{ .key = "MAX_U64", .value = "18446744073709551615" },
-        .{ .key = "MIN_I64", .value = "-9223372036854775808" },
-    });
-    defer env_map.deinit();
-
-    const config = try loadMap(BigNumConfig, env_map, allocator);
-    try std.testing.expectEqual(@as(u64, 18446744073709551615), config.max_u64);
-    try std.testing.expectEqual(@as(i64, -9223372036854775808), config.min_i64);
-}
-
-test "boolean parsing and case handling" {
-    const TestConfig = struct {
-        flag_true1: bool,
-        flag_true2: bool,
-        flag_true3: bool,
-        flag_true4: bool,
-        flag_true5: bool,
-        flag_false1: bool,
-        flag_false2: bool,
-        flag_false3: bool,
-        flag_false4: bool,
-
-        const env = .{
-            .flag_true1 = "FLAG_TRUE1",
-            .flag_true2 = "FLAG_TRUE2",
-            .flag_true3 = "FLAG_TRUE3",
-            .flag_true4 = "FLAG_TRUE4",
-            .flag_true5 = "FLAG_TRUE5",
-            .flag_false1 = "FLAG_FALSE1",
-            .flag_false2 = "FLAG_FALSE2",
-            .flag_false3 = "FLAG_FALSE3",
-            .flag_false4 = "FLAG_FALSE4",
-        };
-    };
-
-    const allocator = std.testing.allocator;
-    var env_map = try createTestEnvMap(allocator, &.{
-        .{ .key = "FLAG_TRUE1", .value = "true" },
-        .{ .key = "FLAG_TRUE2", .value = "TRUE" },
-        .{ .key = "FLAG_TRUE3", .value = "1" },
-        .{ .key = "FLAG_TRUE4", .value = "yes" },
-        .{ .key = "FLAG_TRUE5", .value = "YES" },
-        .{ .key = "FLAG_FALSE1", .value = "false" },
-        .{ .key = "FLAG_FALSE2", .value = "0" },
-        .{ .key = "FLAG_FALSE3", .value = "no" },
-        .{ .key = "FLAG_FALSE4", .value = "anything_else" },
-    });
-    defer env_map.deinit();
-    const config = try loadMap(TestConfig, env_map, allocator);
-
-    try std.testing.expect(config.flag_true1);
-    try std.testing.expect(config.flag_true2);
-    try std.testing.expect(config.flag_true3);
-    try std.testing.expect(config.flag_true4);
-    try std.testing.expect(config.flag_true5);
-
-    try std.testing.expect(!config.flag_false1);
-    try std.testing.expect(!config.flag_false2);
-    try std.testing.expect(!config.flag_false3);
-    try std.testing.expect(!config.flag_false4);
-}
-
-test "comprehensive integer types and limits" {
-    const TestConfig = struct {
-        val_i8: i8,
-        val_i16: i16,
-        val_i32: i32,
-        val_i64: i64,
-        val_i128: i128,
-        val_isize: isize,
-        val_u8: u8,
-        val_u16: u16,
-        val_u32: u32,
-        val_u64: u64,
-        val_u128: u128,
-        val_usize: usize,
-        DATABASE_URL: []const u8,
-        database_url: []const u8,
-
-        const env = .{
-            .val_i8 = "VAL_I8",
-            .val_i16 = "VAL_I16",
-            .val_i32 = "VAL_I32",
-            .val_i64 = "VAL_I64",
-            .val_i128 = "VAL_I128",
-            .val_isize = "VAL_ISIZE",
-            .val_u8 = "VAL_U8",
-            .val_u16 = "VAL_U16",
-            .val_u32 = "VAL_U32",
-            .val_u64 = "VAL_U64",
-            .val_u128 = "VAL_U128",
-            .val_usize = "VAL_USIZE",
-        };
-    };
-
-    const allocator = std.testing.allocator;
-
-    var env_map = try createTestEnvMap(allocator, &.{
-        .{ .key = "VAL_I8", .value = "-128" },
-        .{ .key = "VAL_I16", .value = "-32768" },
-        .{ .key = "VAL_I32", .value = "-2147483648" },
-        .{ .key = "VAL_I64", .value = "-9223372036854775808" },
-        .{ .key = "VAL_I128", .value = "-170141183460469231731687303715884105728" },
-        .{ .key = "VAL_ISIZE", .value = "-1000" },
-        .{ .key = "VAL_U8", .value = "255" },
-        .{ .key = "VAL_U16", .value = "65535" },
-        .{ .key = "VAL_U32", .value = "4294967295" },
-        .{ .key = "VAL_U64", .value = "18446744073709551615" },
-        .{ .key = "VAL_U128", .value = "340282366920938463463374607431768211455" },
-        .{ .key = "VAL_USIZE", .value = "2000" },
-        .{ .key = "DATABASE_URL", .value = "postgres://upper" },
-        .{ .key = "database_url", .value = "postgres://lower" },
-    });
-    defer env_map.deinit();
-    const config = try loadMap(TestConfig, env_map, allocator);
-
-    try std.testing.expectEqual(@as(i8, -128), config.val_i8);
-    try std.testing.expectEqual(@as(i16, -32768), config.val_i16);
-    try std.testing.expectEqual(@as(i32, -2147483648), config.val_i32);
-    try std.testing.expectEqual(@as(i64, -9223372036854775808), config.val_i64);
-    try std.testing.expectEqual(@as(i128, -170141183460469231731687303715884105728), config.val_i128);
-    try std.testing.expectEqual(@as(isize, -1000), config.val_isize);
-    try std.testing.expectEqual(@as(u8, 255), config.val_u8);
-    try std.testing.expectEqual(@as(u16, 65535), config.val_u16);
-    try std.testing.expectEqual(@as(u32, 4294967295), config.val_u32);
-    try std.testing.expectEqual(@as(u64, 18446744073709551615), config.val_u64);
-    try std.testing.expectEqual(@as(u128, 340282366920938463463374607431768211455), config.val_u128);
-    try std.testing.expectEqual(@as(usize, 2000), config.val_usize);
-
-    if (@import("builtin").os.tag == .windows) {
-        try std.testing.expect(config.DATABASE_URL.len > 0);
-        try std.testing.expect(config.database_url.len > 0);
-    } else {
-        try std.testing.expectEqualStrings("postgres://upper", config.DATABASE_URL);
-        try std.testing.expectEqualStrings("postgres://lower", config.database_url);
-    }
-}
-
-test "nested struct parsing and optional behavior" {
+test "nested struct parsing" {
     const MetricsConfig = struct {
         enabled: bool,
         port: u32 = 9090,
@@ -836,4 +589,170 @@ test "nested struct parsing and optional behavior" {
         try std.testing.expectEqual(@as(u32, 9090), config.monitoring.?.metrics.?.port);
         try std.testing.expectEqual(@as(u32, 5000), config.monitoring.?.metrics.?.timeout);
     }
+}
+
+test "case sensitivity of mapped keys" {
+    const TestConfig = struct {
+        value: []const u8,
+        const env = .{ .value = "MY_VAR" };
+    };
+    const allocator = std.testing.allocator;
+
+    var env_map_wrong_case = try createTestEnvMap(allocator, &.{
+        .{ .key = "my_var", .value = "some value" },
+    });
+    defer env_map_wrong_case.deinit();
+
+    // On Windows, environment variable names are case-insensitive
+    // On Unix-like systems, they are case-sensitive
+    if (@import("builtin").os.tag == .windows) {
+        const config = try loadMap(TestConfig, env_map_wrong_case, allocator);
+        try std.testing.expectEqualStrings("some value", config.value);
+    } else {
+        try std.testing.expectError(error.MissingEnvironmentVariable, loadMap(TestConfig, env_map_wrong_case, allocator));
+    }
+
+    var env_map_correct_case = try createTestEnvMap(allocator, &.{
+        .{ .key = "MY_VAR", .value = "correct value" },
+    });
+    defer env_map_correct_case.deinit();
+
+    const config = try loadMap(TestConfig, env_map_correct_case, allocator);
+    try std.testing.expectEqualStrings("correct value", config.value);
+}
+
+test "error handling" {
+    const allocator = std.testing.allocator;
+
+    {
+        const TestConfig = struct {
+            required_field: []const u8,
+            const env = .{ .required_field = "MISSING_VAR" };
+        };
+
+        var env_map = try createTestEnvMap(allocator, &.{});
+        defer env_map.deinit();
+
+        const result = loadMap(TestConfig, env_map, allocator);
+        try std.testing.expectError(error.MissingEnvironmentVariable, result);
+    }
+
+    {
+        const TestConfig = struct {
+            port: u32,
+            const env = .{ .port = "INVALID_PORT" };
+        };
+
+        var env_map = try createTestEnvMap(allocator, &.{
+            .{ .key = "INVALID_PORT", .value = "not_a_number" },
+        });
+        defer env_map.deinit();
+
+        const result = loadMap(TestConfig, env_map, allocator);
+        try std.testing.expectError(error.InvalidCharacter, result);
+    }
+
+    {
+        const TestConfig = struct {
+            ratio: f32,
+            const env = .{ .ratio = "INVALID_FLOAT" };
+        };
+
+        var env_map = try createTestEnvMap(allocator, &.{
+            .{ .key = "INVALID_FLOAT", .value = "not_a_float" },
+        });
+        defer env_map.deinit();
+
+        const result = loadMap(TestConfig, env_map, allocator);
+        try std.testing.expectError(error.InvalidCharacter, result);
+    }
+
+    {
+        const TestConfig = struct {
+            required_field: []const u8,
+            const env = .{ .required_field = "-" };
+        };
+
+        var env_map = try createTestEnvMap(allocator, &.{});
+        defer env_map.deinit();
+
+        const result = loadMap(TestConfig, env_map, allocator);
+        try std.testing.expectError(error.MissingEnvironmentVariable, result);
+    }
+}
+
+test "comprehensive real-world config example" {
+    const DatabaseConfig = struct {
+        host: []const u8,
+        port: u32,
+        username: []const u8,
+        password: ?[]const u8,
+        ssl_enabled: bool,
+
+        const env = .{
+            .host = "DB_HOST",
+            .port = "DB_PORT",
+            .username = "DB_USERNAME",
+            .password = "DB_PASSWORD",
+            .ssl_enabled = "DB_SSL_ENABLED",
+        };
+    };
+
+    const RedisConfig = struct {
+        url: []const u8,
+        timeout: u32,
+
+        const env = .{
+            .url = "REDIS_URL",
+            .timeout = "REDIS_TIMEOUT",
+        };
+    };
+
+    const AppConfig = struct {
+        app_name: []const u8,
+        port: u32,
+        debug: bool,
+        database: DatabaseConfig,
+        redis: ?RedisConfig,
+
+        const env = .{
+            .app_name = "APP_NAME",
+            .port = "PORT",
+            .debug = "DEBUG",
+            .database = "",
+            .redis = "",
+        };
+    };
+
+    const allocator = std.testing.allocator;
+
+    var env_map = try createTestEnvMap(allocator, &.{
+        .{ .key = "APP_NAME", .value = "my-awesome-app" },
+        .{ .key = "PORT", .value = "8080" },
+        .{ .key = "DEBUG", .value = "true" },
+        .{ .key = "DB_HOST", .value = "localhost" },
+        .{ .key = "DB_PORT", .value = "5432" },
+        .{ .key = "DB_USERNAME", .value = "admin" },
+        .{ .key = "DB_PASSWORD", .value = "secret123" },
+        .{ .key = "DB_SSL_ENABLED", .value = "yes" },
+        .{ .key = "REDIS_URL", .value = "redis://localhost:6379" },
+        .{ .key = "REDIS_TIMEOUT", .value = "5000" },
+    });
+    defer env_map.deinit();
+
+    const config = try loadMap(AppConfig, env_map, allocator);
+
+    try std.testing.expectEqualStrings("my-awesome-app", config.app_name);
+    try std.testing.expectEqual(@as(u32, 8080), config.port);
+    try std.testing.expect(config.debug);
+
+    try std.testing.expectEqualStrings("localhost", config.database.host);
+    try std.testing.expectEqual(@as(u32, 5432), config.database.port);
+    try std.testing.expectEqualStrings("admin", config.database.username);
+    try std.testing.expectEqualStrings("secret123", config.database.password.?);
+    try std.testing.expect(config.database.ssl_enabled);
+
+    try std.testing.expect(config.redis != null);
+    try std.testing.expectEqualStrings("redis://localhost:6379", config.redis.?.url);
+    try std.testing.expectEqual(@as(u32, 5000), config.redis.?.timeout);
 }
