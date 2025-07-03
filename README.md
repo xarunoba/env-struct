@@ -7,6 +7,9 @@
 A Zig library for parsing environment variables directly into typed structs, providing automatic type conversion and validation.
 > This library does not read environment variables from files; it only parses existing environment variables into a struct.
 
+> [!WARNING]
+> **`env-struct` is currently in v0. Every release might have breaking changes before `v1.0.0`. Make sure to specify the version you'd like to use.**
+
 ## Why
 
 Managing configuration with environment variables is common, but environment variables are always strings and require manual parsing and validation. `env-struct` eliminates boilerplate by mapping environment variables directly to typed Zig structs, providing automatic type conversion and validation at load time. This approach improves safety, reduces errors, and makes configuration handling more robust and maintainable. 
