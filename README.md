@@ -36,7 +36,11 @@ zig fetch --save "git+https://github.com/xarunoba/env-struct#main"
 Then in your `build.zig`:
 
 ```zig
-const env_struct = b.dependency("env_struct", .{});
+const env_struct = b.dependency("env_struct", .{
+    .target = target,
+    .optimize = optimize,
+});
+    
 exe.root_module.addImport("env_struct", env_struct.module("env_struct"));
 ```
 
