@@ -25,7 +25,7 @@ pub fn loadMap(comptime T: type, env_map: std.process.EnvMap, allocator: std.mem
 // Internal Functions
 //==============================================================================
 
-fn hasAnyRequiredEnvVars(comptime T: type, env_map: std.process.EnvMap) bool {
+fn hasAnyEnvVars(comptime T: type, env_map: std.process.EnvMap) bool {
     const type_info = @typeInfo(T);
     if (type_info != .@"struct") return false;
 
@@ -37,11 +37,10 @@ fn hasAnyRequiredEnvVars(comptime T: type, env_map: std.process.EnvMap) bool {
             }
             break :blk mapped_key;
         } else field.name;
-        const field_type_info = @typeInfo(field.type);
-        const is_optional = field_type_info == .optional;
-        const has_default = field.defaultValue() != null;
 
-        if (!is_optional and !has_default and env_key != null) {
+        const field_type_info = @typeInfo(field.type);
+
+        if (env_key != null) {
             if (env_map.get(env_key.?)) |_| {
                 return true;
             }
@@ -49,14 +48,14 @@ fn hasAnyRequiredEnvVars(comptime T: type, env_map: std.process.EnvMap) bool {
 
         // Check nested structs recursively
         if (field_type_info == .@"struct") {
-            if (hasAnyRequiredEnvVars(field.type, env_map)) {
+            if (hasAnyEnvVars(field.type, env_map)) {
                 return true;
             }
-        } else if (is_optional) {
+        } else if (field_type_info == .optional) {
             const child_type = field_type_info.optional.child;
             const child_type_info = @typeInfo(child_type);
             if (child_type_info == .@"struct") {
-                if (hasAnyRequiredEnvVars(child_type, env_map)) {
+                if (hasAnyEnvVars(child_type, env_map)) {
                     return true;
                 }
             }
@@ -151,8 +150,7 @@ fn loadCore(comptime T: type, env_map: ?std.process.EnvMap, allocator: std.mem.A
             const child_type = field_type_info.optional.child;
             const child_type_info = @typeInfo(child_type);
             if (child_type_info == .@"struct") {
-                // Only parse optional nested struct if it has required environment variables
-                if (hasAnyRequiredEnvVars(child_type, active_env_map)) {
+                if (hasAnyEnvVars(child_type, active_env_map)) {
                     @field(result, field.name) = try parseValue(child_type, "", env_map, allocator);
                 } else if (default_value) |def_val| {
                     @field(result, field.name) = def_val;
@@ -602,6 +600,19 @@ test "nested struct parsing" {
         try std.testing.expect(!config.monitoring.?.metrics.?.enabled);
         try std.testing.expectEqual(@as(u32, 9090), config.monitoring.?.metrics.?.port);
         try std.testing.expectEqual(@as(u32, 5000), config.monitoring.?.metrics.?.timeout);
+    }
+
+    {
+        var env_map = try createTestEnvMap(allocator, &.{
+            .{ .key = "APP_NAME", .value = "partial-redis-app" },
+            .{ .key = "APP_VERSION", .value = "1.0.0" },
+            .{ .key = "DEBUG", .value = "false" },
+            .{ .key = "METRICS_TIMEOUT", .value = "3000" },
+        });
+        defer env_map.deinit();
+
+        const result = loadMap(AppConfig, env_map, allocator);
+        try std.testing.expectError(error.MissingEnvironmentVariable, result);
     }
 }
 
