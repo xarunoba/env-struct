@@ -1,4 +1,4 @@
-# @xarunoba/env-struct 🌱
+# @xarunoba/env-struct.zig 🌱
 
 ![Static Badge](https://img.shields.io/badge/Made_with-%E2%9D%A4%EF%B8%8F-red?style=for-the-badge) ![Static Badge](https://img.shields.io/badge/Zig-0.14.1-orange?style=for-the-badge&logo=zig) ![GitHub License](https://img.shields.io/github/license/xarunoba/env-struct?style=for-the-badge)
 
@@ -36,7 +36,7 @@ Managing configuration with environment variables is common, but environment var
 Add this library to your project using `zig fetch`:
 
 ```bash
-zig fetch --save "git+https://github.com/xarunoba/env-struct#main"
+zig fetch --save "git+https://github.com/xarunoba/env-struct.zig#v0.6.0"
 ```
 
 Then in your `build.zig`:

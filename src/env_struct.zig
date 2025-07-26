@@ -5,7 +5,8 @@
 //! custom mapping, and default values.
 //!
 //! Author: @xarunoba
-//! Repository: https://github.com/xarunoba/env-struct
+//! Repository: https://github.com/xarunoba/env-struct.zig
+//! License: MIT
 
 const std = @import("std");
 
