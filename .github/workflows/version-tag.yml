@@ -42,6 +42,28 @@ jobs:
           echo "new-version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
         fi
     
+    - name: Update README.md with new version
+      if: steps.version-check.outputs.version-changed == 'true'
+      run: |
+        VERSION="${{ steps.version-check.outputs.new-version }}"
+        
+        # Update the zig fetch command in README.md
+        sed -i "s|zig fetch --save \"git+https://github.com/xarunoba/env-struct.zig#v[^\"]*\"|zig fetch --save \"git+https://github.com/xarunoba/env-struct.zig#v${VERSION}\"|g" README.md
+        
+        # Check if README.md was actually modified
+        if git diff --quiet README.md; then
+          echo "No changes needed in README.md"
+        else
+          echo "Updated README.md with version v${VERSION}"
+          
+          # Commit and push the README update
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add README.md
+          git commit -m "Update README.md with version v${VERSION}"
+          git push
+        fi
+    
     - name: Create or update tag
       if: steps.version-check.outputs.version-changed == 'true'
       run: |
