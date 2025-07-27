@@ -91,6 +91,16 @@ export PORT="8080"
 
 ### Custom Mapping
 
+#### Mapping Rules
+
+Fields are mapped to environment variables with these behaviors:
+
+- **Default mapping**: Fields automatically map to environment variables with the same name
+- **Custom mapping**: Use the `env` declaration to map fields to different environment variable names
+- **Skip mapping**: Map a field to `"-"` to skip environment variable lookup (must have default values or be optional)
+- **Field requirements**: Fields without default values must either have corresponding environment variables or be optional
+- **Optional env declaration**: The `env` declaration is only needed for custom mappings or parsing/validation
+
 ```zig
 const Config = struct {
     name: []const u8,
@@ -236,31 +246,7 @@ try custom_env.put("SERVER_PORT", "3000");
 const test_config = try env_struct.loadMap(ServerConfig, custom_env, allocator);
 ```
 
-## Mapping Rules
-
-Fields are mapped to environment variables with these behaviors:
-
-- **Default mapping**: Fields automatically map to environment variables with the same name
-- **Custom mapping**: Use the `env` declaration to map fields to different environment variable names
-- **Skip mapping**: Map a field to `"-"` to skip environment variable lookup (must have default values or be optional)
-- **Field requirements**: Fields without default values must either have corresponding environment variables or be optional
-- **Optional env declaration**: The `env` declaration is only needed for custom mappings or skipping fields
-
-```zig
-const Config = struct {
-    app_name: []const u8,           // Maps to "app_name" env var
-    custom_port: u32,               // Maps to "PORT" env var
-    skipped_field: []const u8 = "default",  // No env var lookup
-
-    const env = .{
-        .custom_port = "PORT",      // Custom mapping
-        .skipped_field = "-",       // Skip mapping
-        // app_name uses default mapping
-    };
-};
-```
-
-## Built-in Supported Types
+## Built-in Parser Supported Types
 
 | Type | Examples | Notes |
 |------|----------|-------|
