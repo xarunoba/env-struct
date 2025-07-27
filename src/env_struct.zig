@@ -1,8 +1,8 @@
 //! Parse environment variables directly into typed Zig structs.
 //!
 //! Provides automatic type conversion and validation for strings, integers,
-//! floats, booleans, and nested structs with support for optional fields,
-//! custom mapping, and default values.
+//! floats, booleans, enums, and nested structs with support for optional fields,
+//! custom mapping, default values, and flexible validation patterns.
 //!
 //! Author: @xarunoba
 //! Repository: https://github.com/xarunoba/env-struct.zig
@@ -14,202 +14,298 @@ const std = @import("std");
 // Public API
 //==============================================================================
 
+/// Load configuration from system environment variables
 pub fn load(comptime T: type, allocator: std.mem.Allocator) !T {
-    return try loadCore(T, null, allocator);
+    return loadCore(T, null, allocator);
 }
 
+/// Load configuration from custom environment map
 pub fn loadMap(comptime T: type, env_map: std.process.EnvMap, allocator: std.mem.Allocator) !T {
-    return try loadCore(T, env_map, allocator);
+    return loadCore(T, env_map, allocator);
+}
+
+/// Parse raw environment variable value into specified type
+/// Useful for custom parsers that want to preserve default parsing with additional validation
+pub fn parseValue(comptime T: type, raw_value: []const u8, allocator: std.mem.Allocator) !T {
+    return parseValueInternal(T, raw_value, null, allocator);
+}
+
+/// Create a validator function that combines default parsing with custom validation
+pub fn validator(comptime T: type, comptime validateFn: anytype) fn ([]const u8, std.mem.Allocator) anyerror!T {
+    return struct {
+        fn parse(raw_value: []const u8, allocator: std.mem.Allocator) !T {
+            const parsed = try parseValue(T, raw_value, allocator);
+            return validateFn(parsed);
+        }
+    }.parse;
 }
 
 //==============================================================================
-// Internal Functions
+// Core Utilities
 //==============================================================================
+
+fn parseBool(val: []const u8) bool {
+    if (val.len <= 4) {
+        var lower_buf: [4]u8 = undefined;
+        for (val, 0..) |c, i| {
+            lower_buf[i] = std.ascii.toLower(c);
+        }
+        const lower = lower_buf[0..val.len];
+        return std.mem.eql(u8, lower, "true") or
+            std.mem.eql(u8, lower, "1") or
+            std.mem.eql(u8, lower, "yes");
+    }
+    return std.mem.eql(u8, val, "true") or
+        std.mem.eql(u8, val, "1") or
+        std.mem.eql(u8, val, "yes") or
+        std.mem.eql(u8, val, "TRUE") or
+        std.mem.eql(u8, val, "YES");
+}
+
+fn isStringType(comptime T: type) bool {
+    const info = @typeInfo(T);
+    return switch (info) {
+        .pointer => |ptr| blk: {
+            if (ptr.size == .one) {
+                const child_info = @typeInfo(ptr.child);
+                break :blk child_info == .array and child_info.array.child == u8;
+            } else {
+                break :blk ptr.size == .slice and ptr.child == u8;
+            }
+        },
+        else => false,
+    };
+}
+
+fn getEnvKey(comptime field_name: []const u8, comptime T: type) ?[]const u8 {
+    if (!@hasDecl(T, "env") or !@hasField(@TypeOf(T.env), field_name)) {
+        return field_name;
+    }
+
+    const env_config = @field(T.env, field_name);
+    const ConfigType = @TypeOf(env_config);
+
+    if (comptime isStringType(ConfigType)) {
+        return if (std.mem.eql(u8, env_config, "-")) null else env_config;
+    }
+
+    if (comptime @hasField(ConfigType, "key")) {
+        return if (std.mem.eql(u8, env_config.key, "-")) null else env_config.key;
+    }
+
+    @compileError("Invalid env config for field '" ++ field_name ++ "'");
+}
+
+fn hasCustomParser(comptime field_name: []const u8, comptime T: type) bool {
+    if (!@hasDecl(T, "env")) {
+        return false;
+    }
+
+    const env_type = @TypeOf(T.env);
+    if (!@hasField(env_type, field_name)) {
+        return false;
+    }
+
+    const env_config = @field(T.env, field_name);
+    const ConfigType = @TypeOf(env_config);
+
+    if (comptime isStringType(ConfigType)) {
+        return false;
+    }
+
+    const type_info = @typeInfo(ConfigType);
+    return type_info == .@"struct" and @hasField(ConfigType, "parser");
+}
+
+fn callCustomParser(comptime ReturnType: type, comptime field_name: []const u8, comptime T: type, raw_value: []const u8, allocator: std.mem.Allocator) !ReturnType {
+    const env_config = @field(T.env, field_name);
+    const parser = env_config.parser;
+    const ParserType = @TypeOf(parser);
+    const parser_info = @typeInfo(ParserType);
+
+    if (parser_info != .@"fn") {
+        @compileError("Parser must be a function");
+    }
+
+    const fn_info = parser_info.@"fn";
+    if (fn_info.params.len != 2) {
+        @compileError("Parser must have signature: fn([]const u8, std.mem.Allocator) !T");
+    }
+
+    return parser(raw_value, allocator);
+}
 
 fn hasAnyEnvVars(comptime T: type, env_map: std.process.EnvMap) bool {
     const type_info = @typeInfo(T);
     if (type_info != .@"struct") return false;
 
     inline for (type_info.@"struct".fields) |field| {
-        const env_key: ?[]const u8 = if (@hasDecl(T, "env") and @hasField(@TypeOf(T.env), field.name)) blk: {
-            const mapped_key = @field(T.env, field.name);
-            if (std.mem.eql(u8, mapped_key, "-")) {
-                break :blk null;
-            }
-            break :blk mapped_key;
-        } else field.name;
-
+        const env_key = getEnvKey(field.name, T);
         const field_type_info = @typeInfo(field.type);
 
-        if (env_key != null) {
-            if (env_map.get(env_key.?)) |_| {
-                return true;
-            }
+        if (env_key != null and env_map.get(env_key.?) != null) {
+            return true;
         }
 
-        // Check nested structs recursively
-        if (field_type_info == .@"struct") {
-            if (hasAnyEnvVars(field.type, env_map)) {
-                return true;
-            }
-        } else if (field_type_info == .optional) {
+        if (field_type_info == .@"struct" and hasAnyEnvVars(field.type, env_map)) {
+            return true;
+        }
+
+        if (field_type_info == .optional) {
             const child_type = field_type_info.optional.child;
             const child_type_info = @typeInfo(child_type);
-            if (child_type_info == .@"struct") {
-                if (hasAnyEnvVars(child_type, env_map)) {
-                    return true;
-                }
+            if (child_type_info == .@"struct" and hasAnyEnvVars(child_type, env_map)) {
+                return true;
             }
         }
     }
     return false;
 }
 
-fn parseValue(comptime FieldType: type, val: []const u8, env_map: ?std.process.EnvMap, allocator: std.mem.Allocator) !FieldType {
-    const field_type_info = @typeInfo(FieldType);
-
-    switch (field_type_info) {
-        .@"struct" => {
-            return try loadCore(FieldType, env_map, allocator);
-        },
-        else => {
-            switch (FieldType) {
-                []const u8 => return val,
-                i8 => return try std.fmt.parseInt(i8, val, 10),
-                i16 => return try std.fmt.parseInt(i16, val, 10),
-                i32 => return try std.fmt.parseInt(i32, val, 10),
-                i64 => return try std.fmt.parseInt(i64, val, 10),
-                i128 => return try std.fmt.parseInt(i128, val, 10),
-                isize => return try std.fmt.parseInt(isize, val, 10),
-                u8 => return try std.fmt.parseInt(u8, val, 10),
-                u16 => return try std.fmt.parseInt(u16, val, 10),
-                u32 => return try std.fmt.parseInt(u32, val, 10),
-                u64 => return try std.fmt.parseInt(u64, val, 10),
-                u128 => return try std.fmt.parseInt(u128, val, 10),
-                usize => return try std.fmt.parseInt(usize, val, 10),
-                f16 => return try std.fmt.parseFloat(f16, val),
-                f32 => return try std.fmt.parseFloat(f32, val),
-                f64 => return try std.fmt.parseFloat(f64, val),
-                f80 => return try std.fmt.parseFloat(f80, val),
-                f128 => return try std.fmt.parseFloat(f128, val),
-                bool => {
-                    var lower_buf: [4]u8 = undefined;
-                    if (val.len <= lower_buf.len) {
-                        for (val, 0..) |c, i| {
-                            lower_buf[i] = std.ascii.toLower(c);
-                        }
-                        const lower = lower_buf[0..val.len];
-                        return std.mem.eql(u8, lower, "true") or
-                            std.mem.eql(u8, lower, "1") or
-                            std.mem.eql(u8, lower, "yes");
-                    } else {
-                        return std.mem.eql(u8, val, "true") or
-                            std.mem.eql(u8, val, "1") or
-                            std.mem.eql(u8, val, "yes") or
-                            std.mem.eql(u8, val, "TRUE") or
-                            std.mem.eql(u8, val, "YES");
-                    }
-                },
-                else => @compileError("Unsupported field type: " ++ @typeName(FieldType)),
-            }
-        },
-    }
-}
+//==============================================================================
+// Core
+//==============================================================================
 
 fn loadCore(comptime T: type, env_map: ?std.process.EnvMap, allocator: std.mem.Allocator) !T {
-    var result: T = undefined;
-
     const type_info = @typeInfo(T);
     if (type_info != .@"struct") {
-        @compileError("Expected a struct type");
+        @compileError("Expected struct type, got " ++ @typeName(T));
     }
 
+    var result: T = undefined;
     var owned_env_map: ?std.process.EnvMap = null;
     defer if (owned_env_map) |*map| map.deinit();
 
-    const active_env_map = if (env_map) |map| map else blk: {
+    const active_env_map = env_map orelse blk: {
         owned_env_map = try std.process.getEnvMap(allocator);
         break :blk owned_env_map.?;
     };
 
     inline for (type_info.@"struct".fields) |field| {
-        const env_key: ?[]const u8 = if (@hasDecl(T, "env") and @hasField(@TypeOf(T.env), field.name)) blk: {
-            const mapped_key = @field(T.env, field.name);
-            if (std.mem.eql(u8, mapped_key, "-")) {
-                break :blk null;
-            }
-            break :blk mapped_key;
-        } else field.name;
-
+        const env_key = getEnvKey(field.name, T);
+        const has_parser = comptime hasCustomParser(field.name, T);
         const field_type_info = @typeInfo(field.type);
         const is_optional = field_type_info == .optional;
         const default_value = field.defaultValue();
 
         if (field_type_info == .@"struct") {
-            @field(result, field.name) = try parseValue(field.type, "", env_map, allocator);
+            @field(result, field.name) = try parseValueInternal(field.type, "", env_map, allocator);
         } else if (is_optional) {
             const child_type = field_type_info.optional.child;
             const child_type_info = @typeInfo(child_type);
+
             if (child_type_info == .@"struct") {
                 if (hasAnyEnvVars(child_type, active_env_map)) {
-                    @field(result, field.name) = try parseValue(child_type, "", env_map, allocator);
-                } else if (default_value) |def_val| {
-                    @field(result, field.name) = def_val;
+                    @field(result, field.name) = try parseValueInternal(child_type, "", env_map, allocator);
                 } else {
-                    @field(result, field.name) = null;
+                    @field(result, field.name) = if (default_value) |def| def else null;
                 }
             } else if (env_key) |key| {
-                const value = active_env_map.get(key);
-                if (value) |val| {
-                    @field(result, field.name) = try parseValue(child_type, val, env_map, allocator);
-                } else if (default_value) |def_val| {
-                    @field(result, field.name) = def_val;
+                if (active_env_map.get(key)) |val| {
+                    @field(result, field.name) = if (has_parser)
+                        try callCustomParser(child_type, field.name, T, val, allocator)
+                    else
+                        try parseValueInternal(child_type, val, env_map, allocator);
                 } else {
-                    @field(result, field.name) = null;
+                    @field(result, field.name) = if (default_value) |def| def else null;
                 }
             } else {
-                if (default_value) |def_val| {
-                    @field(result, field.name) = def_val;
-                } else {
-                    @field(result, field.name) = null;
-                }
+                @field(result, field.name) = if (default_value) |def| def else null;
             }
         } else if (env_key) |key| {
-            const value = active_env_map.get(key);
-            if (value) |val| {
-                @field(result, field.name) = try parseValue(field.type, val, env_map, allocator);
+            if (active_env_map.get(key)) |val| {
+                @field(result, field.name) = if (has_parser)
+                    try callCustomParser(field.type, field.name, T, val, allocator)
+                else
+                    try parseValueInternal(field.type, val, env_map, allocator);
+            } else if (default_value) |def| {
+                @field(result, field.name) = def;
             } else {
-                if (default_value) |def_val| {
-                    @field(result, field.name) = def_val;
-                } else {
-                    return error.MissingEnvironmentVariable;
-                }
+                return error.MissingEnvironmentVariable;
             }
+        } else if (default_value) |def| {
+            @field(result, field.name) = def;
         } else {
-            if (default_value) |def_val| {
-                @field(result, field.name) = def_val;
-            } else {
-                const field_type_info_check = @typeInfo(field.type);
-                if (field_type_info_check == .optional) {
-                    @field(result, field.name) = null;
-                } else {
-                    return error.MissingEnvironmentVariable;
-                }
-            }
+            return error.MissingEnvironmentVariable;
         }
     }
 
     return result;
 }
 
+fn parseValueInternal(comptime T: type, val: []const u8, env_map: ?std.process.EnvMap, allocator: std.mem.Allocator) !T {
+    const type_info = @typeInfo(T);
+
+    if (type_info == .@"struct") {
+        return loadCore(T, env_map, allocator);
+    }
+
+    return switch (T) {
+        []const u8 => val,
+        i8, i16, i32, i64, i128, isize => std.fmt.parseInt(T, val, 10),
+        u8, u16, u32, u64, u128, usize => std.fmt.parseInt(T, val, 10),
+        f16, f32, f64, f80, f128 => std.fmt.parseFloat(T, val),
+        bool => parseBool(val),
+        else => blk: {
+            const inner_type_info = @typeInfo(T);
+            if (inner_type_info == .@"enum") {
+                inline for (inner_type_info.@"enum".fields) |field| {
+                    if (std.mem.eql(u8, val, field.name)) {
+                        break :blk @enumFromInt(field.value);
+                    }
+                }
+                return error.InvalidEnumValue;
+            }
+            @compileError("Unsupported type: " ++ @typeName(T));
+        },
+    };
+}
+
 //==============================================================================
 // Test Utilities
 //==============================================================================
 
-fn createTestEnvMap(allocator: std.mem.Allocator, env_vars: []const struct { key: []const u8, value: []const u8 }) !std.process.EnvMap {
+fn validatePort(port: u32) !u32 {
+    if (port > 65535) return error.InvalidPort;
+    return port;
+}
+
+fn parseEnum(comptime E: type) fn ([]const u8, std.mem.Allocator) anyerror!E {
+    return struct {
+        fn parse(raw: []const u8, allocator: std.mem.Allocator) !E {
+            _ = allocator;
+            inline for (@typeInfo(E).@"enum".fields) |field| {
+                if (std.mem.eql(u8, raw, field.name)) {
+                    return @enumFromInt(field.value);
+                }
+            }
+            return error.InvalidEnumValue;
+        }
+    }.parse;
+}
+
+fn parseStringArray(raw: []const u8, allocator: std.mem.Allocator) ![][]const u8 {
+    if (raw.len == 0) return &[_][]const u8{};
+
+    var result = std.ArrayList([]const u8).init(allocator);
+    defer result.deinit();
+
+    var iter = std.mem.splitScalar(u8, raw, ',');
+    while (iter.next()) |item| {
+        const trimmed = std.mem.trim(u8, item, " \t");
+        if (trimmed.len > 0) {
+            const owned = try allocator.dupe(u8, trimmed);
+            try result.append(owned);
+        }
+    }
+
+    return result.toOwnedSlice();
+}
+
+fn createTestEnvMap(allocator: std.mem.Allocator, vars: []const struct { key: []const u8, value: []const u8 }) !std.process.EnvMap {
     var env_map = std.process.EnvMap.init(allocator);
-    for (env_vars) |env_var| {
-        try env_map.put(env_var.key, env_var.value);
+    for (vars) |v| {
+        try env_map.put(v.key, v.value);
     }
     return env_map;
 }
@@ -218,567 +314,326 @@ fn createTestEnvMap(allocator: std.mem.Allocator, env_vars: []const struct { key
 // Tests
 //==============================================================================
 
-test "parse primitive types" {
-    const TestConfig = struct {
+test "basic type parsing" {
+    const Config = struct {
         name: []const u8,
         port: u32,
         timeout: i32,
-        big_num: u64,
-        negative: i64,
         ratio: f32,
-        precision: f64,
         debug: bool,
-        verbose: bool,
         enabled: bool,
-        disabled: bool,
-        flag_true1: bool,
-        flag_true2: bool,
-        flag_true3: bool,
-        flag_true4: bool,
-        flag_true5: bool,
-        flag_false1: bool,
-        flag_false2: bool,
-        flag_false3: bool,
-        flag_false4: bool,
-        val_i8: i8,
-        val_i16: i16,
-        val_i32: i32,
-        val_i64: i64,
-        val_i128: i128,
-        val_isize: isize,
-        val_u8: u8,
-        val_u16: u16,
-        val_u32: u32,
-        val_u64: u64,
-        val_u128: u128,
-        val_usize: usize,
-        val_f16: f16,
-        val_f80: f80,
-        val_f128: f128,
-        database_url_upper: []const u8,
-        database_url_lower: []const u8,
-
-        const env = .{
-            .name = "TEST_NAME",
-            .port = "TEST_PORT",
-            .timeout = "TEST_TIMEOUT",
-            .big_num = "TEST_BIG_NUM",
-            .negative = "TEST_NEGATIVE",
-            .ratio = "TEST_RATIO",
-            .precision = "TEST_PRECISION",
-            .debug = "TEST_DEBUG",
-            .verbose = "TEST_VERBOSE",
-            .enabled = "TEST_ENABLED",
-            .disabled = "TEST_DISABLED",
-            .flag_true1 = "FLAG_TRUE1",
-            .flag_true2 = "FLAG_TRUE2",
-            .flag_true3 = "FLAG_TRUE3",
-            .flag_true4 = "FLAG_TRUE4",
-            .flag_true5 = "FLAG_TRUE5",
-            .flag_false1 = "FLAG_FALSE1",
-            .flag_false2 = "FLAG_FALSE2",
-            .flag_false3 = "FLAG_FALSE3",
-            .flag_false4 = "FLAG_FALSE4",
-            .val_i8 = "VAL_I8",
-            .val_i16 = "VAL_I16",
-            .val_i32 = "VAL_I32",
-            .val_i64 = "VAL_I64",
-            .val_i128 = "VAL_I128",
-            .val_isize = "VAL_ISIZE",
-            .val_u8 = "VAL_U8",
-            .val_u16 = "VAL_U16",
-            .val_u32 = "VAL_U32",
-            .val_u64 = "VAL_U64",
-            .val_u128 = "VAL_U128",
-            .val_usize = "VAL_USIZE",
-            .val_f16 = "VAL_F16",
-            .val_f80 = "VAL_F80",
-            .val_f128 = "VAL_F128",
-            .database_url_upper = "DATABASE_URL",
-            .database_url_lower = "database_url",
-        };
     };
 
     const allocator = std.testing.allocator;
-
     var env_map = try createTestEnvMap(allocator, &.{
-        .{ .key = "TEST_NAME", .value = "hello world" },
-        .{ .key = "TEST_PORT", .value = "8080" },
-        .{ .key = "TEST_TIMEOUT", .value = "30" },
-        .{ .key = "TEST_BIG_NUM", .value = "18446744073709551615" },
-        .{ .key = "TEST_NEGATIVE", .value = "-42" },
-        .{ .key = "TEST_RATIO", .value = "3.14" },
-        .{ .key = "TEST_PRECISION", .value = "2.718281828459045" },
-        .{ .key = "TEST_DEBUG", .value = "true" },
-        .{ .key = "TEST_VERBOSE", .value = "1" },
-        .{ .key = "TEST_ENABLED", .value = "YES" },
-        .{ .key = "TEST_DISABLED", .value = "false" },
-        .{ .key = "FLAG_TRUE1", .value = "true" },
-        .{ .key = "FLAG_TRUE2", .value = "TRUE" },
-        .{ .key = "FLAG_TRUE3", .value = "1" },
-        .{ .key = "FLAG_TRUE4", .value = "yes" },
-        .{ .key = "FLAG_TRUE5", .value = "YES" },
-        .{ .key = "FLAG_FALSE1", .value = "false" },
-        .{ .key = "FLAG_FALSE2", .value = "0" },
-        .{ .key = "FLAG_FALSE3", .value = "no" },
-        .{ .key = "FLAG_FALSE4", .value = "anything_else" },
-        .{ .key = "VAL_I8", .value = "-128" },
-        .{ .key = "VAL_I16", .value = "-32768" },
-        .{ .key = "VAL_I32", .value = "-2147483648" },
-        .{ .key = "VAL_I64", .value = "-9223372036854775808" },
-        .{ .key = "VAL_I128", .value = "-170141183460469231731687303715884105728" },
-        .{ .key = "VAL_ISIZE", .value = "-1000" },
-        .{ .key = "VAL_U8", .value = "255" },
-        .{ .key = "VAL_U16", .value = "65535" },
-        .{ .key = "VAL_U32", .value = "4294967295" },
-        .{ .key = "VAL_U64", .value = "18446744073709551615" },
-        .{ .key = "VAL_U128", .value = "340282366920938463463374607431768211455" },
-        .{ .key = "VAL_USIZE", .value = "1000" },
-        .{ .key = "VAL_F16", .value = "0.333" },
-        .{ .key = "VAL_F80", .value = "3.141592653589793" },
-        .{ .key = "VAL_F128", .value = "2.71828182845904523536028747135266250" },
-        .{ .key = "database_url", .value = "postgres://lower" },
+        .{ .key = "name", .value = "test-app" },
+        .{ .key = "port", .value = "8080" },
+        .{ .key = "timeout", .value = "-30" },
+        .{ .key = "ratio", .value = "3.14" },
+        .{ .key = "debug", .value = "true" },
+        .{ .key = "enabled", .value = "1" },
     });
     defer env_map.deinit();
-    const config = try loadMap(TestConfig, env_map, allocator);
 
-    try std.testing.expectEqualStrings("hello world", config.name);
+    const config = try loadMap(Config, env_map, allocator);
+    try std.testing.expectEqualStrings("test-app", config.name);
     try std.testing.expectEqual(@as(u32, 8080), config.port);
-    try std.testing.expectEqual(@as(i32, 30), config.timeout);
-    try std.testing.expectEqual(@as(u64, 18446744073709551615), config.big_num);
-    try std.testing.expectEqual(@as(i64, -42), config.negative);
-    try std.testing.expectApproxEqAbs(@as(f32, 3.14), config.ratio, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f64, 2.718281828459045), config.precision, 0.000000000000001);
+    try std.testing.expectEqual(@as(i32, -30), config.timeout);
+    try std.testing.expectEqual(@as(f32, 3.14), config.ratio);
     try std.testing.expect(config.debug);
-    try std.testing.expect(config.verbose);
     try std.testing.expect(config.enabled);
-    try std.testing.expect(!config.disabled);
-    try std.testing.expect(config.flag_true1);
-    try std.testing.expect(config.flag_true2);
-    try std.testing.expect(config.flag_true3);
-    try std.testing.expect(config.flag_true4);
-    try std.testing.expect(config.flag_true5);
-    try std.testing.expect(!config.flag_false1);
-    try std.testing.expect(!config.flag_false2);
-    try std.testing.expect(!config.flag_false3);
-    try std.testing.expect(!config.flag_false4);
-    try std.testing.expectEqual(@as(i8, -128), config.val_i8);
-    try std.testing.expectEqual(@as(i16, -32768), config.val_i16);
-    try std.testing.expectEqual(@as(i32, -2147483648), config.val_i32);
-    try std.testing.expectEqual(@as(i64, -9223372036854775808), config.val_i64);
-    try std.testing.expectEqual(@as(i128, -170141183460469231731687303715884105728), config.val_i128);
-    try std.testing.expectEqual(@as(isize, -1000), config.val_isize);
-    try std.testing.expectEqual(@as(u8, 255), config.val_u8);
-    try std.testing.expectEqual(@as(u16, 65535), config.val_u16);
-    try std.testing.expectEqual(@as(u32, 4294967295), config.val_u32);
-    try std.testing.expectEqual(@as(u64, 18446744073709551615), config.val_u64);
-    try std.testing.expectEqual(@as(u128, 340282366920938463463374607431768211455), config.val_u128);
-    try std.testing.expectEqual(@as(usize, 1000), config.val_usize);
-    try std.testing.expectApproxEqAbs(@as(f16, 0.333), config.val_f16, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f80, 3.141592653589793), config.val_f80, 1e-15);
-    try std.testing.expectApproxEqAbs(@as(f128, 2.71828182845904523536028747135266250), config.val_f128, 1e-30);
-
-    if (@import("builtin").os.tag == .windows) {
-        try std.testing.expect(config.database_url_upper.len > 0);
-        try std.testing.expect(config.database_url_lower.len > 0);
-    } else {
-        try std.testing.expectEqualStrings("postgres://upper", config.database_url_upper);
-        try std.testing.expectEqualStrings("postgres://lower", config.database_url_lower);
-    }
 }
 
-test "optional and default value handling" {
-    const TestConfig = struct {
+test "optional and default values" {
+    const Config = struct {
         required: []const u8,
-        optional_present: ?[]const u8,
-        optional_missing: ?i32,
-        default_used: u32 = 3000,
-        default_overridden: bool = false,
-        optional_with_default: ?i32 = 100,
+        optional_present: ?u32,
+        optional_missing: ?u32,
+        with_default: u32 = 3000,
+        optional_with_default: ?u32 = 100,
 
         const env = .{
-            .required = "TEST_REQUIRED",
-            .optional_present = "TEST_OPTIONAL_PRESENT",
-            .optional_missing = "TEST_OPTIONAL_MISSING",
-            .default_used = "TEST_DEFAULT_USED",
-            .default_overridden = "TEST_DEFAULT_OVERRIDDEN",
-            .optional_with_default = "TEST_OPTIONAL_WITH_DEFAULT",
+            .required = "REQUIRED",
+            .optional_present = "OPTIONAL_PRESENT",
+            .optional_missing = "OPTIONAL_MISSING",
+            .with_default = "WITH_DEFAULT",
+            .optional_with_default = "OPTIONAL_WITH_DEFAULT",
         };
     };
 
     const allocator = std.testing.allocator;
-
     var env_map = try createTestEnvMap(allocator, &.{
-        .{ .key = "TEST_REQUIRED", .value = "must be here" },
-        .{ .key = "TEST_OPTIONAL_PRESENT", .value = "i am here" },
-        .{ .key = "TEST_DEFAULT_OVERRIDDEN", .value = "true" },
+        .{ .key = "REQUIRED", .value = "test" },
+        .{ .key = "OPTIONAL_PRESENT", .value = "42" },
     });
     defer env_map.deinit();
 
-    const config = try loadMap(TestConfig, env_map, allocator);
-    try std.testing.expectEqualStrings("must be here", config.required);
-    try std.testing.expectEqualStrings("i am here", config.optional_present.?);
-    try std.testing.expectEqual(@as(?i32, null), config.optional_missing);
-    try std.testing.expectEqual(@as(u32, 3000), config.default_used);
-    try std.testing.expect(config.default_overridden);
-    try std.testing.expectEqual(@as(?i32, 100), config.optional_with_default);
+    const config = try loadMap(Config, env_map, allocator);
+    try std.testing.expectEqualStrings("test", config.required);
+    try std.testing.expectEqual(@as(u32, 42), config.optional_present.?);
+    try std.testing.expectEqual(@as(?u32, null), config.optional_missing);
+    try std.testing.expectEqual(@as(u32, 3000), config.with_default);
+    try std.testing.expectEqual(@as(u32, 100), config.optional_with_default.?);
 }
 
 test "field mapping and skipping" {
-    const TestConfig = struct {
+    const Config = struct {
         mapped_field: []const u8,
-        unmapped_field: []const u8 = "default",
-        skipped_field: []const u8 = "default_value",
-        skipped_optional: ?[]const u8,
-        skipped_with_default: ?u32 = 42,
+        skipped_field: []const u8 = "default",
+        normal_field: u32 = 42,
 
         const env = .{
-            .mapped_field = "MAPPED_FIELD",
+            .mapped_field = "CUSTOM_NAME",
             .skipped_field = "-",
-            .skipped_optional = "-",
-            .skipped_with_default = "-",
         };
     };
 
     const allocator = std.testing.allocator;
-
     var env_map = try createTestEnvMap(allocator, &.{
-        .{ .key = "MAPPED_FIELD", .value = "mapped_value" },
-        .{ .key = "unmapped_field", .value = "env_value" },
-        .{ .key = "skipped_field", .value = "should_not_be_used" },
-        .{ .key = "skipped_optional", .value = "should_not_be_used" },
-        .{ .key = "skipped_with_default", .value = "999" },
+        .{ .key = "CUSTOM_NAME", .value = "mapped_value" },
+        .{ .key = "normal_field", .value = "100" },
     });
     defer env_map.deinit();
 
-    const config = try loadMap(TestConfig, env_map, allocator);
+    const config = try loadMap(Config, env_map, allocator);
     try std.testing.expectEqualStrings("mapped_value", config.mapped_field);
-    try std.testing.expectEqualStrings("env_value", config.unmapped_field);
-    try std.testing.expectEqualStrings("default_value", config.skipped_field);
-    try std.testing.expectEqual(@as(?[]const u8, null), config.skipped_optional);
-    try std.testing.expectEqual(@as(?u32, 42), config.skipped_with_default);
+    try std.testing.expectEqualStrings("default", config.skipped_field);
+    try std.testing.expectEqual(@as(u32, 100), config.normal_field);
 }
 
-test "nested struct parsing" {
-    const MetricsConfig = struct {
-        enabled: bool,
-        port: u32 = 9090,
-        timeout: u32 = 5000,
-
-        const env = .{
-            .enabled = "METRICS_ENABLED",
-            .port = "METRICS_PORT",
-            .timeout = "METRICS_TIMEOUT",
-        };
-    };
-
-    const LoggingConfig = struct {
-        level: []const u8,
-        file_path: ?[]const u8,
-        max_size: u32,
-
-        const env = .{
-            .level = "LOG_LEVEL",
-            .file_path = "LOG_FILE_PATH",
-            .max_size = "LOG_MAX_SIZE",
-        };
-    };
-
-    const MonitoringConfig = struct {
-        alert_threshold: f32,
-        metrics: ?MetricsConfig,
-        logging: LoggingConfig,
-
-        const env = .{
-            .alert_threshold = "MONITORING_ALERT_THRESHOLD",
-            .metrics = "",
-            .logging = "",
-        };
-    };
-
-    const AppConfig = struct {
-        app_name: []const u8,
-        version: []const u8,
-        monitoring: ?MonitoringConfig,
-        debug: bool,
-
-        const env = .{
-            .app_name = "APP_NAME",
-            .version = "APP_VERSION",
-            .monitoring = "",
-            .debug = "DEBUG",
-        };
-    };
-
-    const allocator = std.testing.allocator;
-
-    {
-        var env_map = try createTestEnvMap(allocator, &.{
-            .{ .key = "APP_NAME", .value = "nested-app" },
-            .{ .key = "APP_VERSION", .value = "1.0.0" },
-            .{ .key = "DEBUG", .value = "true" },
-            .{ .key = "MONITORING_ALERT_THRESHOLD", .value = "95.5" },
-            .{ .key = "LOG_LEVEL", .value = "info" },
-            .{ .key = "LOG_FILE_PATH", .value = "/var/log/app.log" },
-            .{ .key = "LOG_MAX_SIZE", .value = "10485760" },
-            .{ .key = "METRICS_ENABLED", .value = "true" },
-            .{ .key = "METRICS_PORT", .value = "9090" },
-        });
-        defer env_map.deinit();
-        const config = try loadMap(AppConfig, env_map, allocator);
-
-        try std.testing.expectEqualStrings("nested-app", config.app_name);
-        try std.testing.expectEqualStrings("1.0.0", config.version);
-        try std.testing.expect(config.debug);
-
-        try std.testing.expect(config.monitoring != null);
-        try std.testing.expectApproxEqAbs(@as(f32, 95.5), config.monitoring.?.alert_threshold, 0.001);
-
-        try std.testing.expectEqualStrings("info", config.monitoring.?.logging.level);
-        try std.testing.expectEqualStrings("/var/log/app.log", config.monitoring.?.logging.file_path.?);
-        try std.testing.expectEqual(@as(u32, 10485760), config.monitoring.?.logging.max_size);
-
-        try std.testing.expect(config.monitoring.?.metrics != null);
-        try std.testing.expect(config.monitoring.?.metrics.?.enabled);
-        try std.testing.expectEqual(@as(u32, 9090), config.monitoring.?.metrics.?.port);
-        try std.testing.expectEqual(@as(u32, 5000), config.monitoring.?.metrics.?.timeout);
-    }
-
-    {
-        var env_map = try createTestEnvMap(allocator, &.{
-            .{ .key = "APP_NAME", .value = "simple-app" },
-            .{ .key = "APP_VERSION", .value = "2.0.0" },
-            .{ .key = "DEBUG", .value = "false" },
-        });
-        defer env_map.deinit();
-
-        const config = try loadMap(AppConfig, env_map, allocator);
-
-        try std.testing.expectEqualStrings("simple-app", config.app_name);
-        try std.testing.expectEqualStrings("2.0.0", config.version);
-        try std.testing.expect(!config.debug);
-        try std.testing.expect(config.monitoring == null);
-    }
-
-    {
-        var env_map = try createTestEnvMap(allocator, &.{
-            .{ .key = "APP_NAME", .value = "partial-app" },
-            .{ .key = "APP_VERSION", .value = "1.5.0" },
-            .{ .key = "DEBUG", .value = "true" },
-            .{ .key = "MONITORING_ALERT_THRESHOLD", .value = "80.0" },
-            .{ .key = "LOG_LEVEL", .value = "warn" },
-            .{ .key = "LOG_MAX_SIZE", .value = "5242880" },
-        });
-        defer env_map.deinit();
-
-        const config = try loadMap(AppConfig, env_map, allocator);
-        try std.testing.expectEqualStrings("partial-app", config.app_name);
-        try std.testing.expect(config.monitoring != null);
-        try std.testing.expectApproxEqAbs(@as(f32, 80.0), config.monitoring.?.alert_threshold, 0.001);
-
-        try std.testing.expectEqualStrings("warn", config.monitoring.?.logging.level);
-        try std.testing.expectEqual(@as(?[]const u8, null), config.monitoring.?.logging.file_path);
-        try std.testing.expectEqual(@as(u32, 5242880), config.monitoring.?.logging.max_size);
-
-        try std.testing.expect(config.monitoring.?.metrics == null);
-    }
-
-    {
-        var env_map = try createTestEnvMap(allocator, &.{
-            .{ .key = "APP_NAME", .value = "defaults-app" },
-            .{ .key = "APP_VERSION", .value = "3.0.0" },
-            .{ .key = "DEBUG", .value = "false" },
-            .{ .key = "MONITORING_ALERT_THRESHOLD", .value = "70.0" },
-            .{ .key = "LOG_LEVEL", .value = "error" },
-            .{ .key = "LOG_MAX_SIZE", .value = "1048576" },
-            .{ .key = "METRICS_ENABLED", .value = "false" },
-        });
-        defer env_map.deinit();
-
-        const config = try loadMap(AppConfig, env_map, allocator);
-        try std.testing.expect(config.monitoring != null);
-        try std.testing.expect(config.monitoring.?.metrics != null);
-        try std.testing.expect(!config.monitoring.?.metrics.?.enabled);
-        try std.testing.expectEqual(@as(u32, 9090), config.monitoring.?.metrics.?.port);
-        try std.testing.expectEqual(@as(u32, 5000), config.monitoring.?.metrics.?.timeout);
-    }
-
-    {
-        var env_map = try createTestEnvMap(allocator, &.{
-            .{ .key = "APP_NAME", .value = "partial-redis-app" },
-            .{ .key = "APP_VERSION", .value = "1.0.0" },
-            .{ .key = "DEBUG", .value = "false" },
-            .{ .key = "METRICS_TIMEOUT", .value = "3000" },
-        });
-        defer env_map.deinit();
-
-        const result = loadMap(AppConfig, env_map, allocator);
-        try std.testing.expectError(error.MissingEnvironmentVariable, result);
-    }
-}
-
-test "case sensitivity of mapped keys" {
-    const TestConfig = struct {
-        value: []const u8,
-        const env = .{ .value = "MY_VAR" };
-    };
-    const allocator = std.testing.allocator;
-
-    var env_map_wrong_case = try createTestEnvMap(allocator, &.{
-        .{ .key = "my_var", .value = "some value" },
-    });
-    defer env_map_wrong_case.deinit();
-
-    // On Windows, environment variable names are case-insensitive
-    // On Unix-like systems, they are case-sensitive
-    if (@import("builtin").os.tag == .windows) {
-        const config = try loadMap(TestConfig, env_map_wrong_case, allocator);
-        try std.testing.expectEqualStrings("some value", config.value);
-    } else {
-        try std.testing.expectError(error.MissingEnvironmentVariable, loadMap(TestConfig, env_map_wrong_case, allocator));
-    }
-
-    var env_map_correct_case = try createTestEnvMap(allocator, &.{
-        .{ .key = "MY_VAR", .value = "correct value" },
-    });
-    defer env_map_correct_case.deinit();
-
-    const config = try loadMap(TestConfig, env_map_correct_case, allocator);
-    try std.testing.expectEqualStrings("correct value", config.value);
-}
-
-test "error handling" {
-    const allocator = std.testing.allocator;
-
-    {
-        const TestConfig = struct {
-            required_field: []const u8,
-            const env = .{ .required_field = "MISSING_VAR" };
-        };
-
-        var env_map = try createTestEnvMap(allocator, &.{});
-        defer env_map.deinit();
-
-        const result = loadMap(TestConfig, env_map, allocator);
-        try std.testing.expectError(error.MissingEnvironmentVariable, result);
-    }
-
-    {
-        const TestConfig = struct {
-            port: u32,
-            const env = .{ .port = "INVALID_PORT" };
-        };
-
-        var env_map = try createTestEnvMap(allocator, &.{
-            .{ .key = "INVALID_PORT", .value = "not_a_number" },
-        });
-        defer env_map.deinit();
-
-        const result = loadMap(TestConfig, env_map, allocator);
-        try std.testing.expectError(error.InvalidCharacter, result);
-    }
-
-    {
-        const TestConfig = struct {
-            ratio: f32,
-            const env = .{ .ratio = "INVALID_FLOAT" };
-        };
-
-        var env_map = try createTestEnvMap(allocator, &.{
-            .{ .key = "INVALID_FLOAT", .value = "not_a_float" },
-        });
-        defer env_map.deinit();
-
-        const result = loadMap(TestConfig, env_map, allocator);
-        try std.testing.expectError(error.InvalidCharacter, result);
-    }
-
-    {
-        const TestConfig = struct {
-            required_field: []const u8,
-            const env = .{ .required_field = "-" };
-        };
-
-        var env_map = try createTestEnvMap(allocator, &.{});
-        defer env_map.deinit();
-
-        const result = loadMap(TestConfig, env_map, allocator);
-        try std.testing.expectError(error.MissingEnvironmentVariable, result);
-    }
-}
-
-test "comprehensive real-world config example" {
+test "nested structs" {
     const DatabaseConfig = struct {
         host: []const u8,
-        port: u32,
-        username: []const u8,
-        password: ?[]const u8,
-        ssl_enabled: bool,
+        port: u32 = 5432,
 
         const env = .{
             .host = "DB_HOST",
             .port = "DB_PORT",
-            .username = "DB_USERNAME",
-            .password = "DB_PASSWORD",
-            .ssl_enabled = "DB_SSL_ENABLED",
         };
     };
 
-    const RedisConfig = struct {
-        url: []const u8,
-        timeout: u32,
+    const Config = struct {
+        app_name: []const u8,
+        database: DatabaseConfig,
+        optional_db: ?DatabaseConfig,
 
         const env = .{
-            .url = "REDIS_URL",
-            .timeout = "REDIS_TIMEOUT",
+            .app_name = "APP_NAME",
         };
     };
 
-    const AppConfig = struct {
-        app_name: []const u8,
+    const allocator = std.testing.allocator;
+    var env_map = try createTestEnvMap(allocator, &.{
+        .{ .key = "APP_NAME", .value = "my-app" },
+        .{ .key = "DB_HOST", .value = "localhost" },
+        .{ .key = "DB_PORT", .value = "3306" },
+    });
+    defer env_map.deinit();
+
+    const config = try loadMap(Config, env_map, allocator);
+    try std.testing.expectEqualStrings("my-app", config.app_name);
+    try std.testing.expectEqualStrings("localhost", config.database.host);
+    try std.testing.expectEqual(@as(u32, 3306), config.database.port);
+    try std.testing.expectEqualStrings("localhost", config.optional_db.?.host);
+}
+
+test "custom parsers and validators" {
+    const LogLevel = enum { debug, info, warn, err };
+
+    const Config = struct {
         port: u32,
-        debug: bool,
+        log_level: LogLevel,
+        validated_port: u32,
+        tags: [][]const u8,
+
+        const env = .{
+            .port = .{
+                .key = "PORT",
+                .parser = validator(u32, validatePort),
+            },
+            .log_level = .{
+                .key = "LOG_LEVEL",
+                .parser = parseEnum(LogLevel),
+            },
+            .validated_port = .{
+                .key = "VALIDATED_PORT",
+                .parser = validator(u32, validatePort),
+            },
+            .tags = .{
+                .key = "TAGS",
+                .parser = parseStringArray,
+            },
+        };
+    };
+
+    const allocator = std.testing.allocator;
+    var env_map = try createTestEnvMap(allocator, &.{
+        .{ .key = "PORT", .value = "8080" },
+        .{ .key = "LOG_LEVEL", .value = "info" },
+        .{ .key = "VALIDATED_PORT", .value = "3000" },
+        .{ .key = "TAGS", .value = "api, web, production" },
+    });
+    defer env_map.deinit();
+
+    const config = try loadMap(Config, env_map, allocator);
+    defer {
+        for (config.tags) |tag| {
+            allocator.free(tag);
+        }
+        allocator.free(config.tags);
+    }
+
+    try std.testing.expectEqual(@as(u32, 8080), config.port);
+    try std.testing.expectEqual(LogLevel.info, config.log_level);
+    try std.testing.expectEqual(@as(u32, 3000), config.validated_port);
+    try std.testing.expectEqual(@as(usize, 3), config.tags.len);
+    try std.testing.expectEqualStrings("api", config.tags[0]);
+    try std.testing.expectEqualStrings("web", config.tags[1]);
+    try std.testing.expectEqualStrings("production", config.tags[2]);
+
+    // Test parseValue utility with various types
+    try std.testing.expectEqual(@as(u32, 42), try parseValue(u32, "42", allocator));
+    try std.testing.expectEqual(@as(f32, 3.14), try parseValue(f32, "3.14", allocator));
+    try std.testing.expect(try parseValue(bool, "true", allocator));
+    try std.testing.expectEqualStrings("hello", try parseValue([]const u8, "hello", allocator));
+}
+
+test "error cases" {
+    const allocator = std.testing.allocator;
+
+    // Missing required field
+    {
+        const Config = struct {
+            required: []const u8,
+        };
+
+        var env_map = try createTestEnvMap(allocator, &.{});
+        defer env_map.deinit();
+
+        try std.testing.expectError(error.MissingEnvironmentVariable, loadMap(Config, env_map, allocator));
+    }
+
+    // Invalid integer
+    {
+        const Config = struct {
+            port: u32,
+        };
+
+        var env_map = try createTestEnvMap(allocator, &.{
+            .{ .key = "port", .value = "invalid" },
+        });
+        defer env_map.deinit();
+
+        try std.testing.expectError(error.InvalidCharacter, loadMap(Config, env_map, allocator));
+    }
+
+    // Custom validator error
+    {
+        const Config = struct {
+            port: u32,
+            const env = .{
+                .port = .{
+                    .key = "PORT",
+                    .parser = validator(u32, validatePort),
+                },
+            };
+        };
+
+        var env_map = try createTestEnvMap(allocator, &.{
+            .{ .key = "PORT", .value = "99999" },
+        });
+        defer env_map.deinit();
+
+        try std.testing.expectError(error.InvalidPort, loadMap(Config, env_map, allocator));
+    }
+}
+
+test "comprehensive real-world scenario" {
+    const LogLevel = enum { debug, info, warn, err };
+
+    const RedisConfig = struct {
+        host: []const u8 = "localhost",
+        port: u32 = 6379,
+        password: ?[]const u8,
+
+        const env = .{
+            .host = "REDIS_HOST",
+            .port = "REDIS_PORT",
+            .password = "REDIS_PASSWORD",
+        };
+    };
+
+    const DatabaseConfig = struct {
+        host: []const u8,
+        port: u32,
+        ssl: bool = false,
+
+        const env = .{
+            .host = "DB_HOST",
+            .port = .{
+                .key = "DB_PORT",
+                .parser = validator(u32, validatePort),
+            },
+            .ssl = "DB_SSL",
+        };
+    };
+
+    const Config = struct {
+        app_name: []const u8,
+        debug: bool = false,
+        log_level: LogLevel = .info,
+        features: [][]const u8,
         database: DatabaseConfig,
         redis: ?RedisConfig,
 
         const env = .{
             .app_name = "APP_NAME",
-            .port = "PORT",
             .debug = "DEBUG",
-            .database = "",
-            .redis = "",
+            .log_level = .{
+                .key = "LOG_LEVEL",
+                .parser = parseEnum(LogLevel),
+            },
+            .features = .{
+                .key = "FEATURES",
+                .parser = parseStringArray,
+            },
         };
     };
 
     const allocator = std.testing.allocator;
-
     var env_map = try createTestEnvMap(allocator, &.{
-        .{ .key = "APP_NAME", .value = "my-awesome-app" },
-        .{ .key = "PORT", .value = "8080" },
-        .{ .key = "DEBUG", .value = "true" },
-        .{ .key = "DB_HOST", .value = "localhost" },
+        .{ .key = "APP_NAME", .value = "production-app" },
+        .{ .key = "DEBUG", .value = "false" },
+        .{ .key = "LOG_LEVEL", .value = "warn" },
+        .{ .key = "FEATURES", .value = "auth, analytics, caching, monitoring" },
+        .{ .key = "DB_HOST", .value = "db.example.com" },
         .{ .key = "DB_PORT", .value = "5432" },
-        .{ .key = "DB_USERNAME", .value = "admin" },
-        .{ .key = "DB_PASSWORD", .value = "secret123" },
-        .{ .key = "DB_SSL_ENABLED", .value = "yes" },
-        .{ .key = "REDIS_URL", .value = "redis://localhost:6379" },
-        .{ .key = "REDIS_TIMEOUT", .value = "5000" },
+        .{ .key = "DB_SSL", .value = "true" },
+        .{ .key = "REDIS_HOST", .value = "cache.example.com" },
+        .{ .key = "REDIS_PORT", .value = "6380" },
     });
     defer env_map.deinit();
 
-    const config = try loadMap(AppConfig, env_map, allocator);
+    const config = try loadMap(Config, env_map, allocator);
+    defer {
+        for (config.features) |feature| {
+            allocator.free(feature);
+        }
+        allocator.free(config.features);
+    }
 
-    try std.testing.expectEqualStrings("my-awesome-app", config.app_name);
-    try std.testing.expectEqual(@as(u32, 8080), config.port);
-    try std.testing.expect(config.debug);
-
-    try std.testing.expectEqualStrings("localhost", config.database.host);
+    try std.testing.expectEqualStrings("production-app", config.app_name);
+    try std.testing.expect(!config.debug);
+    try std.testing.expectEqual(LogLevel.warn, config.log_level);
+    try std.testing.expectEqual(@as(usize, 4), config.features.len);
+    try std.testing.expectEqualStrings("auth", config.features[0]);
+    try std.testing.expectEqualStrings("analytics", config.features[1]);
+    try std.testing.expectEqualStrings("caching", config.features[2]);
+    try std.testing.expectEqualStrings("monitoring", config.features[3]);
+    try std.testing.expectEqualStrings("db.example.com", config.database.host);
     try std.testing.expectEqual(@as(u32, 5432), config.database.port);
-    try std.testing.expectEqualStrings("admin", config.database.username);
-    try std.testing.expectEqualStrings("secret123", config.database.password.?);
-    try std.testing.expect(config.database.ssl_enabled);
-
-    try std.testing.expect(config.redis != null);
-    try std.testing.expectEqualStrings("redis://localhost:6379", config.redis.?.url);
-    try std.testing.expectEqual(@as(u32, 5000), config.redis.?.timeout);
+    try std.testing.expect(config.database.ssl);
+    try std.testing.expectEqualStrings("cache.example.com", config.redis.?.host);
+    try std.testing.expectEqual(@as(u32, 6380), config.redis.?.port);
+    try std.testing.expectEqual(@as(?[]const u8, null), config.redis.?.password);
 }

@@ -14,7 +14,7 @@ A Zig library for parsing environment variables directly into typed structs, pro
 
 ## Why
 
-Managing configuration with environment variables is common, but environment variables are always strings and require manual parsing and validation. `env-struct` eliminates boilerplate by mapping environment variables directly to typed Zig structs, providing automatic type conversion and validation at load time. This approach improves safety, reduces errors, and makes configuration handling more robust and maintainable. 
+Managing configuration with environment variables is common, but environment variables are always strings and require manual parsing and validation. `env-struct` eliminates boilerplate by mapping environment variables directly to typed Zig structs, providing automatic type conversion and validation at load time. This approach improves safety, reduces errors, and makes configuration handling more robust and maintainable.
 
 > [!NOTE]
 > This is my first ever Zig project so feel free to contribute and send PRs!
@@ -27,6 +27,7 @@ Managing configuration with environment variables is common, but environment var
 - ✅ **Flexible mapping**: Fields map to their names by default, optional custom mapping
 - ✅ **Skip fields**: Map fields to "-" to explicitly skip environment variable lookup
 - ✅ **Flexible boolean parsing**: Parse "true", "1", "yes" (case-insensitive) as true
+- ✅ **Custom parsers**: Validation and complex parsing functions for advanced use cases
 - ✅ **Custom environment maps**: Load from custom maps for testing
 
 ## Installation
@@ -46,7 +47,7 @@ const env_struct = b.dependency("env_struct", .{
     .target = target,
     .optimize = optimize,
 });
-    
+
 exe.root_module.addImport("env_struct", env_struct.module("env_struct"));
 ```
 
@@ -76,7 +77,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     const config = try env_struct.load(Config, allocator);
-    
+
     std.debug.print("App: {s}\n", .{config.APP_NAME});
     std.debug.print("Port: {}\n", .{config.PORT});
 }
@@ -114,7 +115,77 @@ export APP_NAME="My App"
 export PORT="8080"
 ```
 
-### Advanced Usage
+## Advanced Usage
+
+### Custom Parsers and Validators
+
+The library provides two main approaches for custom parsing:
+
+#### 1. Validators (Recommended for validation)
+Use the `validator` function to combine default parsing with custom validation:
+
+```zig
+const std = @import("std");
+const env_struct = @import("env_struct");
+
+// Simple validation function
+fn validatePort(port: u32) !u32 {
+    if (port > 65535) return error.InvalidPort;
+    return port;
+}
+
+const Config = struct {
+    port: u32,
+
+    const env = .{
+        .port = .{
+            .key = "PORT",
+            .parser = env_struct.validator(u32, validatePort),
+        },
+    };
+};
+```
+
+#### 2. Full Custom Parsers
+For complex parsing logic that doesn't use default parsing:
+
+```zig
+// Enum parsing function
+const LogLevel = enum { debug, info, warn, err };
+
+fn parseLogLevel(raw: []const u8, allocator: std.mem.Allocator) !LogLevel {
+    _ = allocator; // unused in this case
+    if (std.mem.eql(u8, raw, "debug")) return .debug;
+    if (std.mem.eql(u8, raw, "info")) return .info;
+    if (std.mem.eql(u8, raw, "warn")) return .warn;
+    if (std.mem.eql(u8, raw, "error")) return .err;
+    return error.InvalidLogLevel;
+}
+
+const Config = struct {
+    port: u32,
+    log_level: LogLevel,
+
+    const env = .{
+        .port = .{
+            .key = "PORT",
+            .parser = env_struct.validator(u32, validatePort),
+        },
+        .log_level = .{
+            .key = "LOG_LEVEL",
+            .parser = parseLogLevel,
+        },
+    };
+};
+```
+
+**Key Points:**
+- Use `validator()` when you want default parsing + validation
+- Use custom parsers for complex parsing that doesn't follow default rules
+- All custom parsers use the signature: `fn(raw: []const u8, allocator: Allocator) !T`
+- The `parseValue()` function is available for implementing custom parsers that want to reuse default parsing
+
+### Nested Structs & Complex Configuration
 
 ```zig
 const Config = struct {
@@ -131,7 +202,7 @@ const Config = struct {
 };
 ```
 
-### Nested Structs & Custom Environment Maps
+### Custom Environment Maps
 
 ```zig
 const DatabaseConfig = struct {
@@ -170,7 +241,7 @@ const test_config = try env_struct.loadMap(ServerConfig, custom_env, allocator);
 Fields are mapped to environment variables with these behaviors:
 
 - **Default mapping**: Fields automatically map to environment variables with the same name
-- **Custom mapping**: Use the `env` declaration to map fields to different environment variable names  
+- **Custom mapping**: Use the `env` declaration to map fields to different environment variable names
 - **Skip mapping**: Map a field to `"-"` to skip environment variable lookup (must have default values or be optional)
 - **Field requirements**: Fields without default values must either have corresponding environment variables or be optional
 - **Optional env declaration**: The `env` declaration is only needed for custom mappings or skipping fields
@@ -178,9 +249,9 @@ Fields are mapped to environment variables with these behaviors:
 ```zig
 const Config = struct {
     app_name: []const u8,           // Maps to "app_name" env var
-    custom_port: u32,               // Maps to "PORT" env var  
+    custom_port: u32,               // Maps to "PORT" env var
     skipped_field: []const u8 = "default",  // No env var lookup
-    
+
     const env = .{
         .custom_port = "PORT",      // Custom mapping
         .skipped_field = "-",       // Skip mapping
@@ -189,7 +260,7 @@ const Config = struct {
 };
 ```
 
-## Supported Types
+## Built-in Supported Types
 
 | Type | Examples | Notes |
 |------|----------|-------|
@@ -198,6 +269,7 @@ const Config = struct {
 | `u8`, `u16`, `u32`, `u64`, `u128`, `usize` | `"42"`, `"255"` | Unsigned integers |
 | `f16`, `f32`, `f64`, `f80`, `f128` | `"3.14"` | Floating point |
 | `bool` | `"true"`, `"1"`, `"yes"` | Case-insensitive |
+| `enum` | `"debug"`, `"info"` | Matches enum field names |
 | `?T` | Any valid `T` or missing | Optional types |
 | `struct` | N/A | Nested structs |
 
@@ -208,6 +280,39 @@ Load configuration from system environment variables.
 
 ### `loadMap(comptime T: type, env_map: std.process.EnvMap, allocator: std.mem.Allocator) !T`
 Load configuration from a custom environment map.
+
+### `parseValue(comptime T: type, raw_value: []const u8, allocator: std.mem.Allocator) !T`
+Parse a raw string value into the specified type. Useful for implementing custom parsers that want to preserve default parsing behavior.
+
+### `validator(comptime T: type, comptime validateFn: anytype) fn([]const u8, std.mem.Allocator) anyerror!T`
+Create a validator function that combines default parsing with custom validation. The validation function should have the signature `fn(T) !T`.
+
+### Custom Parser Function Signature
+
+Custom parsers must follow this signature:
+
+```zig
+fn parserFunction(raw_value: []const u8, allocator: std.mem.Allocator) !T
+```
+
+Where:
+- `raw_value`: The raw string from the environment variable
+- `allocator`: Memory allocator for dynamic allocations (can be ignored if not needed)
+- `T`: The target type to parse into
+- Returns the parsed value or an error
+
+### Validator Function Signature
+
+Validator functions used with `validator()` should have this signature:
+
+```zig
+fn validatorFunction(value: T) !T
+```
+
+Where:
+- `value`: The already-parsed value from default parsing
+- `T`: The type being validated
+- Returns the validated value or an error
 
 ## Building
 

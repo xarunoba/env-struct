@@ -2,85 +2,88 @@ name: Create Version Tag
 
 on:
   push:
-    branches: main
+    branches: [main]
     paths:
-      - 'build.zig.zon'
+      - "build.zig.zon"
 
 jobs:
   check-version-and-tag:
     runs-on: ubuntu-latest
-    
+    permissions:
+      contents: write
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 2 
-    
-    - name: Check if version changed
-      id: version-check
-      run: |
-        # Extract current version from build.zig.zon
-        CURRENT_VERSION=$(grep -E '^\s*\.version\s*=\s*"[^"]*"' build.zig.zon | sed -E 's/.*"([^"]*)".*$/\1/')
-        echo "Current version: $CURRENT_VERSION"
-        
-        # Check if this is the first commit or if we can get the previous version
-        if git show HEAD~1:build.zig.zon > /dev/null 2>&1; then
-          PREVIOUS_VERSION=$(git show HEAD~1:build.zig.zon | grep -E '^\s*\.version\s*=\s*"[^"]*"' | sed -E 's/.*"([^"]*)".*$/\1/')
-          echo "Previous version: $PREVIOUS_VERSION"
-          
-          if [ "$CURRENT_VERSION" != "$PREVIOUS_VERSION" ]; then
-            echo "Version changed from $PREVIOUS_VERSION to $CURRENT_VERSION"
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check if version changed
+        id: version-check
+        run: |
+          # Extract current version from build.zig.zon
+          CURRENT_VERSION=$(grep -E '^\s*\.version\s*=\s*"[^"]*"' build.zig.zon | sed -E 's/.*"([^"]*)".*$/\1/')
+          echo "Current version: $CURRENT_VERSION"
+
+          # Check if this is the first commit or if we can get the previous version
+          if git show HEAD~1:build.zig.zon > /dev/null 2>&1; then
+            PREVIOUS_VERSION=$(git show HEAD~1:build.zig.zon | grep -E '^\s*\.version\s*=\s*"[^"]*"' | sed -E 's/.*"([^"]*)".*$/\1/')
+            echo "Previous version: $PREVIOUS_VERSION"
+
+            if [ "$CURRENT_VERSION" != "$PREVIOUS_VERSION" ]; then
+              echo "Version changed from $PREVIOUS_VERSION to $CURRENT_VERSION"
+              echo "version-changed=true" >> $GITHUB_OUTPUT
+              echo "new-version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+            else
+              echo "Version unchanged"
+              echo "version-changed=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "First commit or previous version not found, creating tag for current version"
             echo "version-changed=true" >> $GITHUB_OUTPUT
             echo "new-version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-          else
-            echo "Version unchanged"
-            echo "version-changed=false" >> $GITHUB_OUTPUT
           fi
-        else
-          echo "First commit or previous version not found, creating tag for current version"
-          echo "version-changed=true" >> $GITHUB_OUTPUT
-          echo "new-version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-        fi
-    
-    - name: Update README.md with new version
-      if: steps.version-check.outputs.version-changed == 'true'
-      run: |
-        VERSION="${{ steps.version-check.outputs.new-version }}"
-        
-        # Update the zig fetch command in README.md
-        sed -i "s|zig fetch --save \"git+https://github.com/xarunoba/env-struct.zig#v[^\"]*\"|zig fetch --save \"git+https://github.com/xarunoba/env-struct.zig#v${VERSION}\"|g" README.md
-        
-        # Check if README.md was actually modified
-        if git diff --quiet README.md; then
-          echo "No changes needed in README.md"
-        else
-          echo "Updated README.md with version v${VERSION}"
-          
-          # Commit and push the README update
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add README.md
-          git commit -m "Update README.md with version v${VERSION}"
-          git push
-        fi
-    
-    - name: Create or update tag
-      if: steps.version-check.outputs.version-changed == 'true'
-      run: |
-        VERSION="${{ steps.version-check.outputs.new-version }}"
-        
-        # Check if tag already exists
-        if git tag | grep -q "^v${VERSION}$"; then
-          echo "Tag v${VERSION} already exists, deleting and recreating..."
-          # Delete the tag locally and remotely
-          git tag -d "v${VERSION}" || true
-          git push --delete origin "v${VERSION}" || true
-        else
-          echo "Creating new tag v${VERSION}"
-        fi
-        
-        # Create and push the tag
-        git tag -a "v${VERSION}" -m "${VERSION} Release"
-        git push origin "v${VERSION}"
-        
-        echo "Successfully created/updated and pushed tag v${VERSION}"
+
+      - name: Update README.md with new version
+        if: steps.version-check.outputs.version-changed == 'true'
+        run: |
+          VERSION="${{ steps.version-check.outputs.new-version }}"
+
+          # Update the zig fetch command in README.md
+          sed -i "s|zig fetch --save \"git+https://github.com/xarunoba/env-struct.zig#v[^\"]*\"|zig fetch --save \"git+https://github.com/xarunoba/env-struct.zig#v${VERSION}\"|g" README.md
+
+          # Check if README.md was actually modified
+          if git diff --quiet README.md; then
+            echo "No changes needed in README.md"
+          else
+            echo "Updated README.md with version v${VERSION}"
+
+            # Commit and push the README update
+            git config --local user.email "action@github.com"
+            git config --local user.name "GitHub Action"
+            git add README.md
+            git commit -m "Update README.md with version v${VERSION}"
+            git push
+          fi
+
+      - name: Create or update tag
+        if: steps.version-check.outputs.version-changed == 'true'
+        run: |
+          VERSION="${{ steps.version-check.outputs.new-version }}"
+
+          # Check if tag already exists
+          if git tag | grep -q "^v${VERSION}$"; then
+            echo "Tag v${VERSION} already exists, deleting and recreating..."
+            # Delete the tag locally and remotely
+            git tag -d "v${VERSION}" || true
+            git push --delete origin "v${VERSION}" || true
+          else
+            echo "Creating new tag v${VERSION}"
+          fi
+
+          # Create and push the tag
+          git tag -a "v${VERSION}" -m "${VERSION} Release"
+          git push origin "v${VERSION}"
+
+          echo "Successfully created/updated and pushed tag v${VERSION}"
