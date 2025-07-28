@@ -149,7 +149,7 @@ const Config = struct {
 
     const env = .{
         .port = .{
-            .key = "PORT",
+            .key = "PORT",  // .key can be omitted to use field name automatically
             .parser = env_struct.validator(u32, validatePort),
         },
     };
@@ -190,6 +190,8 @@ const Config = struct {
 ```
 
 **Key Points:**
+- `.key` is the environment variable name, can be omitted to use the field name
+- `.parser` is the custom parser function, can be a validator or a full custom parser
 - Use `validator()` when you want default parsing + validation
 - Use custom parsers for complex parsing that doesn't follow default rules
 - All custom parsers use the signature: `fn(raw: []const u8, allocator: Allocator) !T`

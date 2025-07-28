@@ -93,7 +93,7 @@ fn getEnvKey(comptime field_name: []const u8, comptime T: type) ?[]const u8 {
         return if (std.mem.eql(u8, env_config.key, "-")) null else env_config.key;
     }
 
-    @compileError("Invalid env config for field '" ++ field_name ++ "'");
+    return field_name;
 }
 
 fn hasCustomParser(comptime field_name: []const u8, comptime T: type) bool {
@@ -445,6 +445,8 @@ test "custom parsers and validators" {
         log_level: LogLevel,
         validated_port: u32,
         tags: [][]const u8,
+        auto_port: u32,
+        auto_log_level: LogLevel,
 
         const env = .{
             .port = .{
@@ -463,15 +465,24 @@ test "custom parsers and validators" {
                 .key = "TAGS",
                 .parser = parseStringArray,
             },
+            .auto_port = .{
+                .parser = validator(u32, validatePort),
+            },
+            .auto_log_level = .{
+                .parser = parseEnum(LogLevel),
+            },
         };
     };
 
     const allocator = std.testing.allocator;
+
     var env_map = try createTestEnvMap(allocator, &.{
         .{ .key = "PORT", .value = "8080" },
         .{ .key = "LOG_LEVEL", .value = "info" },
         .{ .key = "VALIDATED_PORT", .value = "3000" },
         .{ .key = "TAGS", .value = "api, web, production" },
+        .{ .key = "auto_port", .value = "9000" },
+        .{ .key = "auto_log_level", .value = "debug" },
     });
     defer env_map.deinit();
 
@@ -490,12 +501,33 @@ test "custom parsers and validators" {
     try std.testing.expectEqualStrings("api", config.tags[0]);
     try std.testing.expectEqualStrings("web", config.tags[1]);
     try std.testing.expectEqualStrings("production", config.tags[2]);
+    try std.testing.expectEqual(@as(u32, 9000), config.auto_port);
+    try std.testing.expectEqual(LogLevel.debug, config.auto_log_level);
 
     // Test parseValue utility with various types
     try std.testing.expectEqual(@as(u32, 42), try parseValue(u32, "42", allocator));
     try std.testing.expectEqual(@as(f32, 3.14), try parseValue(f32, "3.14", allocator));
     try std.testing.expect(try parseValue(bool, "true", allocator));
     try std.testing.expectEqualStrings("hello", try parseValue([]const u8, "hello", allocator));
+
+    // Test validation works with automatic key inference (using simple config to avoid memory issues)
+    {
+        const SimpleConfig = struct {
+            port: u32,
+
+            const env = .{
+                .port = .{
+                    .parser = validator(u32, validatePort),
+                },
+            };
+        };
+
+        var validation_env_map = try createTestEnvMap(allocator, &.{
+            .{ .key = "port", .value = "70000" }, // Invalid port > 65535
+        });
+        defer validation_env_map.deinit();
+        try std.testing.expectError(error.InvalidPort, loadMap(SimpleConfig, validation_env_map, allocator));
+    }
 }
 
 test "error cases" {
