@@ -287,7 +287,7 @@ fn parseEnum(comptime E: type) fn ([]const u8, std.mem.Allocator) anyerror!E {
 fn parseStringArray(raw: []const u8, allocator: std.mem.Allocator) ![][]const u8 {
     if (raw.len == 0) return &[_][]const u8{};
 
-    var result = std.ArrayList([]const u8).init(allocator);
+    var result = std.array_list.Managed([]const u8).init(allocator);
     defer result.deinit();
 
     var iter = std.mem.splitScalar(u8, raw, ',');

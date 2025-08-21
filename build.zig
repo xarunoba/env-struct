@@ -4,16 +4,14 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    _ = b.addModule("env_struct", .{
+    const env_struct = b.addModule("env_struct", .{
         .root_source_file = b.path("src/env_struct.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     const lib_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/env_struct.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = env_struct,
     });
 
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
