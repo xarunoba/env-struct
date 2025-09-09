@@ -25,6 +25,7 @@ Managing configuration with environment variables is common, but environment var
 - ✅ **Multiple types**: Strings, integers, floats, booleans, and nested structs
 - ✅ **Optional fields**: Support for optional fields with defaults
 - ✅ **Flexible mapping**: Fields map to their names by default, optional custom mapping
+- ✅ **Prefix/Suffix support**: Group environment variables with common prefixes or suffixes
 - ✅ **Skip fields**: Map fields to "-" to explicitly skip environment variable lookup
 - ✅ **Flexible boolean parsing**: Parse "true", "1", "yes" (case-insensitive) as true
 - ✅ **Custom parsers**: Validation and complex parsing functions for advanced use cases
@@ -97,9 +98,10 @@ Fields are mapped to environment variables with these behaviors:
 
 - **Default mapping**: Fields automatically map to environment variables with the same name
 - **Custom mapping**: Use the `env` declaration to map fields to different environment variable names
+- **Prefix/Suffix support**: Use `prefix` and/or `suffix` declarations to automatically prepend/append to environment variable names
 - **Skip mapping**: Map a field to `"-"` to skip environment variable lookup (must have default values or be optional)
 - **Field requirements**: Fields without default values must either have corresponding environment variables or be optional
-- **Optional env declaration**: The `env` declaration is only needed for custom mappings or parsing/validation
+- **Optional env declaration**: The `env` declaration is only needed for custom mappings, prefix/suffix, or parsing/validation
 
 ```zig
 const Config = struct {
@@ -124,6 +126,45 @@ Set environment variables:
 export APP_NAME="My App"
 export PORT="8080"
 ```
+
+#### Prefix and Suffix Support
+
+Use `prefix` and/or `suffix` declarations to automatically apply common patterns to environment variable names:
+
+```zig
+const Config = struct {
+    name: []const u8,        // Maps to "APP_NAME" env var
+    port: u32,               // Maps to "APP_PORT" env var
+    debug: bool = false,     // Maps to "APP_DEBUG" env var
+    timeout: ?f32 = null,    // Maps to "APP_TIMEOUT" env var
+
+    const env = .{
+        .name = "NAME",
+        .port = "PORT",
+        .debug = "DEBUG",
+        .timeout = "TIMEOUT",
+
+        const prefix = "APP_";
+        // const suffix = "_TEST";  // Optional suffix
+    };
+};
+
+const config = try env_struct.load(Config, allocator);
+```
+
+Set environment variables:
+```bash
+export APP_NAME="My App"
+export APP_PORT="8080"
+export APP_DEBUG="true"
+```
+
+**Prefix/Suffix Features:**
+- Work with custom field mapping and default field names
+- Inherit recursively to nested structs
+- Can be overridden in nested structs
+- Compatible with custom parsers and validation
+- Applied at compile time for efficiency
 
 ## Advanced Usage
 
@@ -200,16 +241,42 @@ const Config = struct {
 ### Nested Structs & Complex Configuration
 
 ```zig
+const DatabaseConfig = struct {
+    host: []const u8,           // Maps to "APP_HOST" (inherits prefix)
+    port: u32 = 5432,           // Maps to "APP_PORT" (inherits prefix)
+
+    const env = .{
+        .host = "HOST",
+        .port = "PORT",
+    };
+};
+
+const RedisConfig = struct {
+    host: []const u8,           // Maps to "REDIS_HOST" (overrides prefix)
+    port: u32,                  // Maps to "REDIS_PORT" (overrides prefix)
+
+    const env = .{
+        .host = "HOST",
+        .port = "PORT",
+
+        const prefix = "REDIS_";  // Overrides inherited prefix
+    };
+};
+
 const Config = struct {
-    app_name: []const u8,           // Maps to "app_name" env var
+    app_name: []const u8,           // Maps to "APP_NAME" env var
     custom_port: u32,               // Maps to "PORT" env var (custom mapping)
-    debug: bool = false,            // Maps to "debug" env var, uses default
+    debug: bool = false,            // Maps to "APP_debug" env var (inherits prefix)
     internal_field: []const u8 = "computed",  // Skipped from env lookup
-    optional_feature: ?u32,         // Maps to "optional_feature", can be null
+    optional_feature: ?u32,         // Maps to "APP_optional_feature", can be null
+    database: DatabaseConfig,       // Fields inherit APP_ prefix
+    redis: RedisConfig,             // Fields use REDIS_ prefix (overrides)
 
     const env = .{
         .custom_port = "PORT",      // Custom environment variable name
         .internal_field = "-",      // Skip environment variable lookup
+
+        const prefix = "APP_";      // Applied to most fields and inherited by nested structs
     };
 };
 ```
