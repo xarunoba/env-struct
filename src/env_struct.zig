@@ -16,18 +16,18 @@ const std = @import("std");
 
 /// Load configuration from system environment variables
 pub fn load(comptime T: type, allocator: std.mem.Allocator) !T {
-    return loadCore(T, null, allocator);
+    return loadCoreWithInheritance(T, null, "", "", allocator);
 }
 
 /// Load configuration from custom environment map
 pub fn loadMap(comptime T: type, env_map: std.process.EnvMap, allocator: std.mem.Allocator) !T {
-    return loadCore(T, env_map, allocator);
+    return loadCoreWithInheritance(T, env_map, "", "", allocator);
 }
 
 /// Parse raw environment variable value into specified type
 /// Useful for custom parsers that want to preserve default parsing with additional validation
 pub fn parseValue(comptime T: type, raw_value: []const u8, allocator: std.mem.Allocator) !T {
-    return parseValueInternal(T, raw_value, null, allocator);
+    return parseValueInternalWithInheritance(T, raw_value, null, "", "", allocator);
 }
 
 /// Create a validator function that combines default parsing with custom validation
@@ -77,23 +77,91 @@ fn isStringType(comptime T: type) bool {
     };
 }
 
-fn getEnvKey(comptime field_name: []const u8, comptime T: type) ?[]const u8 {
+fn getEnvPrefix(comptime T: type) []const u8 {
+    if (!@hasDecl(T, "env")) {
+        return "";
+    }
+    
+    const env_type = @TypeOf(T.env);
+    if (@hasDecl(env_type, "prefix")) {
+        const prefix = env_type.prefix;
+        if (comptime isStringType(@TypeOf(prefix))) {
+            return prefix;
+        }
+    }
+    return "";
+}
+
+fn getEnvSuffix(comptime T: type) []const u8 {
+    if (!@hasDecl(T, "env")) {
+        return "";
+    }
+    
+    const env_type = @TypeOf(T.env);
+    if (@hasDecl(env_type, "suffix")) {
+        const suffix = env_type.suffix;
+        if (comptime isStringType(@TypeOf(suffix))) {
+            return suffix;
+        }
+    }
+    return "";
+}
+
+fn getInheritedPrefix(comptime T: type, parent_prefix: []const u8) []const u8 {
+    const own_prefix = comptime getEnvPrefix(T);
+    if (own_prefix.len > 0) {
+        return own_prefix;
+    }
+    return parent_prefix;
+}
+
+fn getInheritedSuffix(comptime T: type, parent_suffix: []const u8) []const u8 {
+    const own_suffix = comptime getEnvSuffix(T);
+    if (own_suffix.len > 0) {
+        return own_suffix;
+    }
+    return parent_suffix;
+}
+
+fn getEnvKeyWithInheritance(comptime field_name: []const u8, comptime T: type, inherited_prefix: []const u8, inherited_suffix: []const u8) ?[]const u8 {
+    const prefix = comptime getInheritedPrefix(T, inherited_prefix);
+    const suffix = comptime getInheritedSuffix(T, inherited_suffix);
+    
     if (!@hasDecl(T, "env") or !@hasField(@TypeOf(T.env), field_name)) {
+        if (prefix.len > 0 or suffix.len > 0) {
+            return prefix ++ field_name ++ suffix;
+        }
         return field_name;
     }
 
     const env_config = @field(T.env, field_name);
     const ConfigType = @TypeOf(env_config);
 
+    var base_key: []const u8 = undefined;
+
     if (comptime isStringType(ConfigType)) {
-        return if (std.mem.eql(u8, env_config, "-")) null else env_config;
+        if (std.mem.eql(u8, env_config, "-")) {
+            return null;
+        }
+        base_key = env_config;
+    } else if (comptime @hasField(ConfigType, "key")) {
+        if (std.mem.eql(u8, env_config.key, "-")) {
+            return null;
+        }
+        base_key = env_config.key;
+    } else {
+        base_key = field_name;
     }
 
-    if (comptime @hasField(ConfigType, "key")) {
-        return if (std.mem.eql(u8, env_config.key, "-")) null else env_config.key;
+    if (prefix.len > 0 or suffix.len > 0) {
+        return prefix ++ base_key ++ suffix;
     }
+    
+    return base_key;
+}
 
-    return field_name;
+fn getEnvKey(comptime field_name: []const u8, comptime T: type) ?[]const u8 {
+    return getEnvKeyWithInheritance(field_name, T, "", "");
 }
 
 fn hasCustomParser(comptime field_name: []const u8, comptime T: type) bool {
@@ -135,31 +203,43 @@ fn callCustomParser(comptime ReturnType: type, comptime field_name: []const u8, 
     return parser(raw_value, allocator);
 }
 
-fn hasAnyEnvVars(comptime T: type, env_map: std.process.EnvMap) bool {
+fn hasAnyEnvVarsWithInheritance(comptime T: type, env_map: std.process.EnvMap, inherited_prefix: []const u8, inherited_suffix: []const u8) bool {
     const type_info = @typeInfo(T);
     if (type_info != .@"struct") return false;
 
     inline for (type_info.@"struct".fields) |field| {
-        const env_key = getEnvKey(field.name, T);
+        const env_key = getEnvKeyWithInheritance(field.name, T, inherited_prefix, inherited_suffix);
         const field_type_info = @typeInfo(field.type);
 
         if (env_key != null and env_map.get(env_key.?) != null) {
             return true;
         }
 
-        if (field_type_info == .@"struct" and hasAnyEnvVars(field.type, env_map)) {
-            return true;
+        if (field_type_info == .@"struct") {
+            const child_prefix = comptime getInheritedPrefix(field.type, inherited_prefix);
+            const child_suffix = comptime getInheritedSuffix(field.type, inherited_suffix);
+            if (hasAnyEnvVarsWithInheritance(field.type, env_map, child_prefix, child_suffix)) {
+                return true;
+            }
         }
 
         if (field_type_info == .optional) {
             const child_type = field_type_info.optional.child;
             const child_type_info = @typeInfo(child_type);
-            if (child_type_info == .@"struct" and hasAnyEnvVars(child_type, env_map)) {
-                return true;
+            if (child_type_info == .@"struct") {
+                const child_prefix = comptime getInheritedPrefix(child_type, inherited_prefix);
+                const child_suffix = comptime getInheritedSuffix(child_type, inherited_suffix);
+                if (hasAnyEnvVarsWithInheritance(child_type, env_map, child_prefix, child_suffix)) {
+                    return true;
+                }
             }
         }
     }
     return false;
+}
+
+fn hasAnyEnvVars(comptime T: type, env_map: std.process.EnvMap) bool {
+    return hasAnyEnvVarsWithInheritance(T, env_map, "", "");
 }
 
 //==============================================================================
@@ -167,6 +247,10 @@ fn hasAnyEnvVars(comptime T: type, env_map: std.process.EnvMap) bool {
 //==============================================================================
 
 fn loadCore(comptime T: type, env_map: ?std.process.EnvMap, allocator: std.mem.Allocator) !T {
+    return loadCoreWithInheritance(T, env_map, "", "", allocator);
+}
+
+fn loadCoreWithInheritance(comptime T: type, env_map: ?std.process.EnvMap, inherited_prefix: []const u8, inherited_suffix: []const u8, allocator: std.mem.Allocator) !T {
     const type_info = @typeInfo(T);
     if (type_info != .@"struct") {
         @compileError("Expected struct type, got " ++ @typeName(T));
@@ -182,21 +266,25 @@ fn loadCore(comptime T: type, env_map: ?std.process.EnvMap, allocator: std.mem.A
     };
 
     inline for (type_info.@"struct".fields) |field| {
-        const env_key = getEnvKey(field.name, T);
+        const env_key = getEnvKeyWithInheritance(field.name, T, inherited_prefix, inherited_suffix);
         const has_parser = comptime hasCustomParser(field.name, T);
         const field_type_info = @typeInfo(field.type);
         const is_optional = field_type_info == .optional;
         const default_value = field.defaultValue();
 
         if (field_type_info == .@"struct") {
-            @field(result, field.name) = try parseValueInternal(field.type, "", env_map, allocator);
+            const child_prefix = comptime getInheritedPrefix(field.type, inherited_prefix);
+            const child_suffix = comptime getInheritedSuffix(field.type, inherited_suffix);
+            @field(result, field.name) = try parseValueInternalWithInheritance(field.type, "", env_map, child_prefix, child_suffix, allocator);
         } else if (is_optional) {
             const child_type = field_type_info.optional.child;
             const child_type_info = @typeInfo(child_type);
 
             if (child_type_info == .@"struct") {
-                if (hasAnyEnvVars(child_type, active_env_map)) {
-                    @field(result, field.name) = try parseValueInternal(child_type, "", env_map, allocator);
+                const child_prefix = comptime getInheritedPrefix(child_type, inherited_prefix);
+                const child_suffix = comptime getInheritedSuffix(child_type, inherited_suffix);
+                if (hasAnyEnvVarsWithInheritance(child_type, active_env_map, child_prefix, child_suffix)) {
+                    @field(result, field.name) = try parseValueInternalWithInheritance(child_type, "", env_map, child_prefix, child_suffix, allocator);
                 } else {
                     @field(result, field.name) = if (default_value) |def| def else null;
                 }
@@ -205,7 +293,7 @@ fn loadCore(comptime T: type, env_map: ?std.process.EnvMap, allocator: std.mem.A
                     @field(result, field.name) = if (has_parser)
                         try callCustomParser(child_type, field.name, T, val, allocator)
                     else
-                        try parseValueInternal(child_type, val, env_map, allocator);
+                        try parseValueInternalWithInheritance(child_type, val, env_map, inherited_prefix, inherited_suffix, allocator);
                 } else {
                     @field(result, field.name) = if (default_value) |def| def else null;
                 }
@@ -217,7 +305,7 @@ fn loadCore(comptime T: type, env_map: ?std.process.EnvMap, allocator: std.mem.A
                 @field(result, field.name) = if (has_parser)
                     try callCustomParser(field.type, field.name, T, val, allocator)
                 else
-                    try parseValueInternal(field.type, val, env_map, allocator);
+                    try parseValueInternalWithInheritance(field.type, val, env_map, inherited_prefix, inherited_suffix, allocator);
             } else if (default_value) |def| {
                 @field(result, field.name) = def;
             } else {
@@ -234,10 +322,14 @@ fn loadCore(comptime T: type, env_map: ?std.process.EnvMap, allocator: std.mem.A
 }
 
 fn parseValueInternal(comptime T: type, val: []const u8, env_map: ?std.process.EnvMap, allocator: std.mem.Allocator) !T {
+    return parseValueInternalWithInheritance(T, val, env_map, "", "", allocator);
+}
+
+fn parseValueInternalWithInheritance(comptime T: type, val: []const u8, env_map: ?std.process.EnvMap, inherited_prefix: []const u8, inherited_suffix: []const u8, allocator: std.mem.Allocator) !T {
     const type_info = @typeInfo(T);
 
     if (type_info == .@"struct") {
-        return loadCore(T, env_map, allocator);
+        return loadCoreWithInheritance(T, env_map, inherited_prefix, inherited_suffix, allocator);
     }
 
     return switch (T) {
@@ -578,6 +670,214 @@ test "error cases" {
 
         try std.testing.expectError(error.InvalidPort, loadMap(Config, env_map, allocator));
     }
+}
+
+test "prefix and suffix support" {
+    const Config = struct {
+        name: []const u8,
+        port: u32,
+        debug: bool = false,
+        timeout: ?f32 = null,
+
+        const env = .{
+            .name = "NAME",
+            .port = "PORT",
+            .debug = "DEBUG",
+            .timeout = "TIMEOUT",
+
+            const prefix = "APP_";
+            const suffix = "_TEST";
+        };
+    };
+
+    const allocator = std.testing.allocator;
+    var env_map = try createTestEnvMap(allocator, &.{
+        .{ .key = "APP_NAME_TEST", .value = "test-app" },
+        .{ .key = "APP_PORT_TEST", .value = "8080" },
+        .{ .key = "APP_DEBUG_TEST", .value = "true" },
+        .{ .key = "APP_TIMEOUT_TEST", .value = "30.5" },
+    });
+    defer env_map.deinit();
+
+    const config = try loadMap(Config, env_map, allocator);
+    try std.testing.expectEqualStrings("test-app", config.name);
+    try std.testing.expectEqual(@as(u32, 8080), config.port);
+    try std.testing.expect(config.debug);
+    try std.testing.expectEqual(@as(f32, 30.5), config.timeout.?);
+}
+
+test "prefix only support" {
+    const Config = struct {
+        name: []const u8,
+        port: u32,
+
+        const env = .{
+            .name = "NAME",
+            .port = "PORT",
+
+            const prefix = "APP_";
+        };
+    };
+
+    const allocator = std.testing.allocator;
+    var env_map = try createTestEnvMap(allocator, &.{
+        .{ .key = "APP_NAME", .value = "test-app" },
+        .{ .key = "APP_PORT", .value = "8080" },
+    });
+    defer env_map.deinit();
+
+    const config = try loadMap(Config, env_map, allocator);
+    try std.testing.expectEqualStrings("test-app", config.name);
+    try std.testing.expectEqual(@as(u32, 8080), config.port);
+}
+
+test "suffix only support" {
+    const Config = struct {
+        name: []const u8,
+        port: u32,
+
+        const env = .{
+            .name = "NAME",
+            .port = "PORT",
+
+            const suffix = "_TEST";
+        };
+    };
+
+    const allocator = std.testing.allocator;
+    var env_map = try createTestEnvMap(allocator, &.{
+        .{ .key = "NAME_TEST", .value = "test-app" },
+        .{ .key = "PORT_TEST", .value = "8080" },
+    });
+    defer env_map.deinit();
+
+    const config = try loadMap(Config, env_map, allocator);
+    try std.testing.expectEqualStrings("test-app", config.name);
+    try std.testing.expectEqual(@as(u32, 8080), config.port);
+}
+
+test "prefix/suffix with default field names" {
+    const Config = struct {
+        app_name: []const u8,
+        server_port: u32,
+
+        const env = .{
+            const prefix = "MY_";
+            const suffix = "_VAR";
+        };
+    };
+
+    const allocator = std.testing.allocator;
+    var env_map = try createTestEnvMap(allocator, &.{
+        .{ .key = "MY_app_name_VAR", .value = "test-app" },
+        .{ .key = "MY_server_port_VAR", .value = "8080" },
+    });
+    defer env_map.deinit();
+
+    const config = try loadMap(Config, env_map, allocator);
+    try std.testing.expectEqualStrings("test-app", config.app_name);
+    try std.testing.expectEqual(@as(u32, 8080), config.server_port);
+}
+
+test "nested structs with prefix inheritance" {
+    const DatabaseConfig = struct {
+        host: []const u8,
+        port: u32 = 5432,
+
+        const env = .{
+            .host = "HOST",
+            .port = "PORT",
+        };
+    };
+
+    const RedisConfig = struct {
+        host: []const u8,
+        port: u32,
+
+        const env = .{
+            .host = "HOST",
+            .port = "PORT",
+
+            const prefix = "REDIS_";
+        };
+    };
+
+    const Config = struct {
+        app_name: []const u8,
+        database: DatabaseConfig,
+        redis: RedisConfig,
+
+        const env = .{
+            .app_name = "NAME",
+
+            const prefix = "APP_";
+        };
+    };
+
+    const allocator = std.testing.allocator;
+    var env_map = try createTestEnvMap(allocator, &.{
+        .{ .key = "APP_NAME", .value = "my-app" },
+        .{ .key = "APP_HOST", .value = "db.localhost" },
+        .{ .key = "APP_PORT", .value = "3306" },
+        .{ .key = "REDIS_HOST", .value = "cache.localhost" },
+        .{ .key = "REDIS_PORT", .value = "6379" },
+    });
+    defer env_map.deinit();
+
+    const config = try loadMap(Config, env_map, allocator);
+    try std.testing.expectEqualStrings("my-app", config.app_name);
+    try std.testing.expectEqualStrings("db.localhost", config.database.host);
+    try std.testing.expectEqual(@as(u32, 3306), config.database.port);
+    try std.testing.expectEqualStrings("cache.localhost", config.redis.host);
+    try std.testing.expectEqual(@as(u32, 6379), config.redis.port);
+}
+
+test "prefix/suffix with custom parsers" {
+    const Config = struct {
+        port: u32,
+
+        const env = .{
+            .port = .{
+                .key = "PORT",
+                .parser = validator(u32, validatePort),
+            },
+
+            const prefix = "APP_";
+        };
+    };
+
+    const allocator = std.testing.allocator;
+    var env_map = try createTestEnvMap(allocator, &.{
+        .{ .key = "APP_PORT", .value = "8080" },
+    });
+    defer env_map.deinit();
+
+    const config = try loadMap(Config, env_map, allocator);
+    try std.testing.expectEqual(@as(u32, 8080), config.port);
+}
+
+test "prefix/suffix with skipped fields" {
+    const Config = struct {
+        name: []const u8,
+        internal_field: []const u8 = "default",
+
+        const env = .{
+            .name = "NAME",
+            .internal_field = "-",
+
+            const prefix = "APP_";
+        };
+    };
+
+    const allocator = std.testing.allocator;
+    var env_map = try createTestEnvMap(allocator, &.{
+        .{ .key = "APP_NAME", .value = "test-app" },
+    });
+    defer env_map.deinit();
+
+    const config = try loadMap(Config, env_map, allocator);
+    try std.testing.expectEqualStrings("test-app", config.name);
+    try std.testing.expectEqualStrings("default", config.internal_field);
 }
 
 test "comprehensive real-world scenario" {
